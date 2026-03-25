@@ -70,3 +70,18 @@ HTTP по IP (`http://192.168.0.199:3000`) страница откроется, 
 
 - Нужны уникальные ники; при конфликте сервер отклоняет вход.
 - Архитектура mesh подходит для небольших комнат (примерно 3-8 участников).
+
+## GitHub
+
+Репозиторий: **`z228_voicechat`**. Локально уже есть ветка `main` и коммит.
+
+1. На [GitHub](https://github.com/new) создайте **новый** репозиторий с именем `z228_voicechat` (**без** README, .gitignore и лицензии — чтобы не было конфликта).
+2. Укажите свой логин в remote и отправьте код:
+
+```bash
+cd local-voicechat
+git remote set-url origin https://github.com/<ВАШ-ЛОГИН>/z228_voicechat.git
+git push -u origin main
+```
+
+Если remote ещё не добавлен: `git remote add origin https://github.com/<ВАШ-ЛОГИН>/z228_voicechat.git`.
