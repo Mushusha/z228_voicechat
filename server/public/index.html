@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>zalupa228local</title>
+    <link rel="icon" type="image/png" href="./logo.png" />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html[data-theme="dark"] {
+        --bg: #1d1f24;
+        --surface: #23262d;
+        --surface-hover: #2b2f38;
+        --border: #3a3f4b;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --accent: #22d3ee;
+        --accent-dim: rgba(34, 211, 238, 0.2);
+        --input-bg: #2b2f38;
+        --danger: #f87171;
+      }
+
+      html[data-theme="light"] {
+        --bg: #e6e6e6;
+        --surface: #dcdcdc;
+        --surface-hover: #d0d0d0;
+        --border: #b8b8b8;
+        --text: #1a1a1a;
+        --text-muted: #4b5563;
+        --accent: #0891b2;
+        --accent-dim: rgba(8, 145, 178, 0.2);
+        --input-bg: #f0f0f0;
+        --danger: #dc2626;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+
+      body {
+        font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .app {
+        display: flex;
+        height: 100vh;
+        min-height: 0;
+      }
+
+      .sidebar {
+        width: 288px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        min-height: 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 18px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .brand .logo {
+        width: 88px;
+        height: 88px;
+        border-radius: 22px;
+        object-fit: cover;
+        flex-shrink: 0;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      }
+
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .brand-name {
+        font-weight: 700;
+        font-size: 1.05rem;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-tag {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      .sidebar-scroll {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        padding: 12px 16px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .row.toggles {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      label.chk {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.875rem;
+        color: var(--text);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      input[type="text"] {
+        flex: 1;
+        min-width: 120px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--input-bg);
+        color: var(--text);
+      }
+
+      button {
+        padding: 8px 14px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface-hover);
+        color: var(--text);
+        cursor: pointer;
+        font-size: 0.875rem;
+      }
+
+      button:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button.btn-primary {
+        background: var(--accent);
+        color: #0c1920;
+        border-color: transparent;
+        font-weight: 600;
+      }
+
+      html[data-theme="light"] button.btn-primary {
+        color: #fff;
+      }
+
+      button.btn-theme {
+        width: 100%;
+        border-color: var(--accent);
+        background: var(--accent-dim);
+        color: var(--text);
+      }
+
+      #status {
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        margin: 0;
+        line-height: 1.4;
+      }
+
+      .section-title {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-muted);
+        margin: 0 0 8px;
+      }
+
+      ul#participants {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+
+      #participants li {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      #participants li:last-child {
+        border-bottom: 0;
+      }
+
+      .peer-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .peer-name {
+        font-weight: 600;
+        font-size: 0.9rem;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .peer-name.muted-label {
+        color: var(--text-muted);
+        text-decoration: line-through;
+      }
+
+      .peer-vol-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+      }
+
+      .peer-vol-row input[type="range"] {
+        flex: 1;
+        min-width: 0;
+        accent-color: var(--accent);
+      }
+
+      .peer-vol-val {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        width: 40px;
+        text-align: right;
+        flex-shrink: 0;
+      }
+
+      .peer-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .peer-actions button {
+        padding: 6px 10px;
+        font-size: 0.75rem;
+      }
+
+      .chat-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        background: var(--bg);
+      }
+
+      .chat-header {
+        flex-shrink: 0;
+        padding: 14px 20px;
+        font-weight: 700;
+        font-size: 1rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      #chatLog {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 16px 20px;
+        font-size: 0.9375rem;
+        line-height: 1.45;
+      }
+
+      #chatLog .chat-line {
+        margin-bottom: 14px;
+        word-break: break-word;
+      }
+
+      #chatLog .chat-meta {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        margin-bottom: 4px;
+      }
+
+      #chatLog .chat-image {
+        max-width: min(100%, 440px);
+        max-height: 380px;
+        border-radius: 10px;
+        display: block;
+        margin-top: 8px;
+        object-fit: contain;
+        background: var(--surface-hover);
+      }
+
+      #chatLog .chat-text {
+        margin-top: 6px;
+      }
+
+      .chat-footer {
+        flex-shrink: 0;
+        display: flex;
+        gap: 10px;
+        padding: 14px 20px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .chat-footer input[type="text"] {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .nick-field {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body data-https-port="3443">
+    <div class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <img class="logo" src="./logo.png" width="88" height="88" alt="zalupa228" />
+          <div class="brand-text">
+            <span class="brand-name">zalupa228</span>
+            <span class="brand-tag">локальный голос и чат</span>
+          </div>
+        </header>
+        <div class="sidebar-scroll">
+          <div class="toolbar">
+            <label class="section-title" for="nickname">Имя</label>
+            <input
+              id="nickname"
+              class="nick-field"
+              type="text"
+              placeholder="ник"
+              maxlength="30"
+              autocomplete="username"
+            />
+            <div class="row">
+              <button id="joinBtn" type="button" class="btn-primary">Войти</button>
+              <button id="leaveBtn" type="button" disabled>Выйти</button>
+              <button id="micBtn" type="button" disabled>Мик: вкл</button>
+            </div>
+            <div class="row toggles">
+              <button id="themeBtn" type="button" class="btn-theme" aria-pressed="true">
+                Тема: тёмная
+              </button>
+            </div>
+            <p id="status">Не подключено</p>
+          </div>
+          <div>
+            <h2 class="section-title">Участники</h2>
+            <ul id="participants"></ul>
+          </div>
+        </div>
+      </aside>
+      <main class="chat-main">
+        <div class="chat-header">Чат</div>
+        <div id="chatLog" aria-live="polite"></div>
+        <footer class="chat-footer">
+          <input id="chatImageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
+          <button id="chatImageBtn" type="button" disabled title="Вставить фото">
+            Фото
+          </button>
+          <input id="chatInput" type="text" placeholder="Сообщение…" maxlength="500" disabled />
+          <button id="chatSendBtn" type="button" disabled>Отправить</button>
+        </footer>
+      </main>
+    </div>
+    <script src="./app.js?v=10"></script>
+  </body>
+</html>

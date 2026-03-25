@@ -1,0 +1,19 @@
+{
+  "name": "zalupa228local",
+  "version": "1.0.0",
+  "description": "zalupa228local — mesh WebRTC voice chat with WebSocket signaling.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "docker:up": "docker compose up --build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "mongoose": "^9.3.3",
+    "selfsigned": "^5.5.0",
+    "ws": "^8.20.0"
+  }
+}
