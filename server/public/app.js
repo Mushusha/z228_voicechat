@@ -22,6 +22,22 @@ function leaveRoom() {
   setStatus("Вы вышли из комнаты.");
 }
 
+/** Закрытие вкладки / уход со страницы: сразу закрыть сигнальный сокет, чтобы сервер разослал peer-left. */
+function closeSignalingOnPageExit() {
+  const s = socket;
+  if (!s) {
+    return;
+  }
+  if (s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING) {
+    try {
+      s.close(1000, "tab_closed");
+    } catch (_) {}
+  }
+}
+
+window.addEventListener("pagehide", closeSignalingOnPageExit);
+window.addEventListener("beforeunload", closeSignalingOnPageExit);
+
 /** Сброс незавершённого входа: «висящий» WebSocket в CONNECTING блокировал повторный join(). */
 function forceDisconnectClient() {
   joinedRoom = false;
@@ -244,12 +260,26 @@ function uint8ToBase64(bytes) {
   return btoa(binary);
 }
 
+function parseDataUrlImageParts(dataUrl) {
+  const u = String(dataUrl).trim();
+  const idx = u.indexOf(";base64,");
+  if (idx === -1) {
+    return null;
+  }
+  const mime = u.slice(5, idx).split(";")[0].trim().toLowerCase();
+  const data = u.slice(idx + 8).replace(/\s/g, "");
+  if (!mime.startsWith("image/") || data.length < 32) {
+    return null;
+  }
+  return { mime, data };
+}
+
 async function prepareImageForChat(file) {
   try {
     const bitmap = await createImageBitmap(file);
     try {
-      const maxW = 1280;
-      const maxH = 1280;
+      const maxW = 1024;
+      const maxH = 1024;
       let w = bitmap.width;
       let h = bitmap.height;
       const scale = Math.min(1, maxW / w, maxH / h);
@@ -276,11 +306,11 @@ async function prepareImageForChat(file) {
       r.onerror = reject;
       r.readAsDataURL(file);
     });
-    const m = String(dataUrl).match(/^data:([^;,]+);base64,(.+)$/);
-    if (!m) {
-      throw new Error("read fail");
+    const parsed = parseDataUrlImageParts(String(dataUrl));
+    if (parsed) {
+      return parsed;
     }
-    return { mime: m[1].trim().toLowerCase(), data: m[2].replace(/\s/g, "") };
+    throw new Error("read fail");
   }
 }
 
@@ -353,6 +383,119 @@ function sendChat() {
   }
 }
 
+function clipboardLooksLikeImage(cd) {
+  if (!cd) {
+    return false;
+  }
+  if (cd.types) {
+    for (let i = 0; i < cd.types.length; i++) {
+      const t = String(cd.types[i]).toLowerCase();
+      if (t.startsWith("image/")) {
+        return true;
+      }
+    }
+  }
+  if (cd.files && cd.files.length > 0) {
+    const f = cd.files[0];
+    const t = String(f.type || "").toLowerCase();
+    if (t.startsWith("image/") || t === "" || t === "application/octet-stream") {
+      return true;
+    }
+  }
+  if (cd.items) {
+    for (let i = 0; i < cd.items.length; i++) {
+      const it = cd.items[i];
+      if (it.kind !== "file") {
+        continue;
+      }
+      const ty = String(it.type || "").toLowerCase();
+      if (ty.startsWith("image/") || ty === "" || ty === "application/octet-stream") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function imageFileFromClipboardData(cd) {
+  if (!cd) {
+    return null;
+  }
+  if (cd.files && cd.files.length) {
+    for (let i = 0; i < cd.files.length; i++) {
+      const f = cd.files[i];
+      const t = String(f.type || "");
+      if (t.startsWith("image/")) {
+        return f;
+      }
+    }
+    const f0 = cd.files[0];
+    if (f0) {
+      const t0 = String(f0.type || "");
+      if (!t0 || t0 === "application/octet-stream") {
+        return f0;
+      }
+    }
+  }
+  if (cd.items) {
+    for (const item of cd.items) {
+      if (item.kind !== "file") {
+        continue;
+      }
+      const ty = String(item.type || "");
+      if (ty.startsWith("image/") || ty === "") {
+        const file = item.getAsFile();
+        if (file && file.size > 0) {
+          return file;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function snapshotClipboardText(cd) {
+  let plain = "";
+  let html = "";
+  if (!cd || typeof cd.getData !== "function") {
+    return { plain, html };
+  }
+  try {
+    plain = cd.getData("text/plain") || "";
+  } catch (_) {}
+  try {
+    html = cd.getData("text/html") || "";
+  } catch (_) {}
+  return { plain, html };
+}
+
+async function imageFileFromClipboardTextSnapshot(snap) {
+  const plain = snap && snap.plain;
+  try {
+    if (plain && /^data:image\//i.test(plain.trim())) {
+      const res = await fetch(plain.trim());
+      const blob = await res.blob();
+      if (blob && blob.size > 0) {
+        return new File([blob], "paste.png", { type: blob.type || "image/png" });
+      }
+    }
+  } catch (_) {}
+  const html = snap && snap.html;
+  try {
+    if (html) {
+      const m = html.match(/<img[^>]+src\s*=\s*["']([^"']+)["']/i);
+      if (m && /^data:image\//i.test(m[1])) {
+        const res = await fetch(m[1]);
+        const blob = await res.blob();
+        if (blob && blob.size > 0) {
+          return new File([blob], "paste.png", { type: blob.type || "image/png" });
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function sendChatImage(file, caption) {
   if (!joinedRoom) {
     setStatus("Сначала войдите в комнату.");
@@ -362,14 +505,32 @@ async function sendChatImage(file, caption) {
     setStatus("Нет соединения. Обновите страницу.");
     return;
   }
-  if (!file || !String(file.type || "").startsWith("image/")) {
+  if (!file) {
+    setStatus("Нужен файл-картинка.");
+    return;
+  }
+  const ftype = String(file.type || "");
+  if (ftype && !ftype.startsWith("image/") && ftype !== "application/octet-stream") {
     setStatus("Нужен файл-картинка.");
     return;
   }
   const cap = (caption != null ? caption : chatInput && chatInput.value ? chatInput.value : "").trim().slice(0, 500);
   setStatus("Готовлю фото…");
   try {
-    const { mime, data } = await prepareImageForChat(file);
+    let work = file;
+    try {
+      const buf = await file.arrayBuffer();
+      work = new File([buf], file.name || "paste.png", {
+        type: file.type || "image/png",
+      });
+    } catch (e) {
+      console.warn("file buffer copy", e);
+    }
+    const { mime, data } = await prepareImageForChat(work);
+    if (!data || data.length < 32) {
+      setStatus("Пустой снимок — попробуйте скопировать картинку снова.");
+      return;
+    }
     if (data.length > 2_400_000) {
       setStatus("Фото слишком большое — попробуйте другое или уменьшите.");
       return;
@@ -816,22 +977,26 @@ function connectSocket() {
   };
 
   socket.onclose = () => {
-    joinedRoom = false;
-    socket = null;
-    rtcChain = Promise.resolve();
-    setStatus("Отключено");
-    micBtn.disabled = true;
-    setChatEnabled(false);
-    joinBtn.disabled = false;
-    nicknameInput.disabled = false;
-    if (leaveBtn) {
-      leaveBtn.disabled = true;
-    }
-    if (chatLog) {
-      chatLog.innerHTML = "";
-    }
-    for (const peerNickname of Array.from(peers.keys())) {
-      removePeer(peerNickname);
+    try {
+      joinedRoom = false;
+      socket = null;
+      rtcChain = Promise.resolve();
+      setStatus("Отключено");
+      micBtn.disabled = true;
+      setChatEnabled(false);
+      joinBtn.disabled = false;
+      nicknameInput.disabled = false;
+      if (leaveBtn) {
+        leaveBtn.disabled = true;
+      }
+      if (chatLog) {
+        chatLog.innerHTML = "";
+      }
+      for (const peerNickname of Array.from(peers.keys())) {
+        removePeer(peerNickname);
+      }
+    } catch (_) {
+      /* страница может уже выгружаться */
     }
   };
 }
@@ -929,28 +1094,47 @@ chatSendBtn.addEventListener("click", () => {
 });
 
 chatInput.addEventListener("keydown", (event) => {
+  if (event.isComposing) {
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendChat();
   }
 });
 
-chatInput.addEventListener("paste", (event) => {
-  const items = event.clipboardData && event.clipboardData.items;
-  if (!items) {
+async function onDocumentPasteForChat(event) {
+  if (!joinedRoom) {
     return;
   }
-  for (const item of items) {
-    if (item.kind === "file" && item.type.startsWith("image/")) {
-      event.preventDefault();
-      const file = item.getAsFile();
-      if (file) {
-        void sendChatImage(file, chatInput.value.trim());
-      }
-      return;
-    }
+  const target = event.target;
+  if (target instanceof Element && target.closest("aside.sidebar")) {
+    return;
   }
-});
+  const cd = event.clipboardData;
+  const fileSync = imageFileFromClipboardData(cd);
+  const textSnap = snapshotClipboardText(cd);
+  const looksImage = fileSync != null || clipboardLooksLikeImage(cd);
+  if (!looksImage) {
+    return;
+  }
+  /** До любого await — иначе браузер успеет вставить текст по умолчанию и сорвёт отправку. */
+  event.preventDefault();
+  event.stopPropagation();
+
+  let file = fileSync;
+  if (!file) {
+    file = await imageFileFromClipboardTextSnapshot(textSnap);
+  }
+  if (!file) {
+    setStatus("Не удалось прочитать картинку из буфера — используйте кнопку «Фото» или другой снимок.");
+    return;
+  }
+  const cap = chatInput && !chatInput.disabled ? chatInput.value.trim().slice(0, 500) : "";
+  await sendChatImage(file, cap);
+}
+
+document.addEventListener("paste", onDocumentPasteForChat, true);
 
 if (chatImageBtn && chatImageInput) {
   chatImageBtn.addEventListener("click", () => {
