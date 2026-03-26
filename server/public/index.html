@@ -225,6 +225,29 @@
         color: var(--text);
       }
 
+      .btn-mic-sidebar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 10px;
+        min-width: 42px;
+      }
+
+      .btn-mic-sidebar .mic-btn-icon {
+        flex-shrink: 0;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+      }
+
+      .btn-mic-sidebar .mic-btn-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+
       #status {
         font-size: 0.8125rem;
         color: var(--text-muted);
@@ -322,11 +345,243 @@
 
       .chat-header {
         flex-shrink: 0;
-        padding: 14px 20px;
-        font-weight: 700;
-        font-size: 1rem;
+        padding: 10px 16px 10px 20px;
         border-bottom: 1px solid var(--border);
         background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .chat-header-title {
+        font-weight: 700;
+        font-size: 1rem;
+      }
+
+      .chat-header-menu {
+        position: relative;
+        flex-shrink: 0;
+      }
+
+      .btn-ellipsis {
+        width: 40px;
+        height: 36px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.35rem;
+        line-height: 1;
+        letter-spacing: 0.02em;
+        border-radius: 8px;
+        background: var(--surface-hover);
+        border: 1px solid var(--border);
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .btn-ellipsis:hover:not(:disabled) {
+        filter: brightness(1.08);
+        border-color: var(--accent);
+      }
+
+      .chat-dropdown {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        min-width: 240px;
+        padding: 6px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        z-index: 100;
+      }
+
+      .chat-dropdown[hidden] {
+        display: none !important;
+      }
+
+      .dropdown-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        margin: 0;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        font-size: 0.875rem;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .dropdown-item:hover:not(:disabled) {
+        background: var(--surface-hover);
+      }
+
+      .dropdown-item:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 200;
+        padding: 20px;
+      }
+
+      .modal-overlay[hidden] {
+        display: none !important;
+      }
+
+      .modal-dialog {
+        width: 100%;
+        max-width: 420px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px 22px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      }
+
+      .modal-dialog h2 {
+        margin: 0 0 12px;
+        font-size: 1.1rem;
+      }
+
+      .modal-dialog p {
+        margin: 0 0 16px;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
+      .modal-subtitle {
+        margin: 4px 0 8px;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+
+      .admin-participant-list {
+        list-style: none;
+        margin: 0 0 14px;
+        padding: 0;
+        max-height: 240px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--input-bg);
+      }
+
+      .admin-participant-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .admin-participant-row:last-child {
+        border-bottom: none;
+      }
+
+      .admin-participant-name {
+        font-size: 0.875rem;
+        min-width: 0;
+        word-break: break-word;
+      }
+
+      .admin-participant-hint {
+        padding: 12px 14px;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        margin: 0;
+      }
+
+      .btn-kick {
+        flex-shrink: 0;
+        padding: 6px 12px;
+        font-size: 0.75rem;
+        border-radius: 6px;
+        border: 1px solid var(--danger);
+        background: transparent;
+        color: var(--danger);
+        cursor: pointer;
+      }
+
+      .btn-kick:hover:not(:disabled) {
+        background: rgba(248, 113, 113, 0.12);
+      }
+
+      .btn-kick:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      html[data-theme="light"] .btn-kick:hover:not(:disabled) {
+        background: rgba(220, 38, 38, 0.1);
+      }
+
+      .modal-footnote {
+        margin: -6px 0 16px;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        line-height: 1.45;
+      }
+
+      .admin-auth-section label {
+        display: block;
+        font-size: 0.875rem;
+        margin-bottom: 6px;
+        color: var(--text);
+      }
+
+      .admin-auth-section input[type="password"] {
+        width: 100%;
+        margin-bottom: 10px;
+      }
+
+      .admin-auth-error {
+        margin: 0 0 10px;
+        font-size: 0.8125rem;
+        color: var(--danger);
+      }
+
+      .admin-modal-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+        align-items: center;
+      }
+
+      .btn-text {
+        background: transparent;
+        border: none;
+        color: var(--accent);
+        text-decoration: underline;
+        padding: 6px 0;
+        font-size: 0.8125rem;
+        cursor: pointer;
+      }
+
+      .btn-text:hover:not(:disabled) {
+        filter: brightness(1.1);
+      }
+
+      .btn-text:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
       }
 
       #chatLog {
@@ -412,11 +667,8 @@
               <div class="row">
                 <button id="joinBtn" type="button" class="btn-primary">Войти</button>
                 <button id="leaveBtn" type="button" disabled>Выйти</button>
-                <button id="micBtn" type="button" disabled>Мик: вкл</button>
-              </div>
-              <div class="row toggles">
-                <button id="themeBtn" type="button" class="btn-theme" aria-pressed="true">
-                  Тема: тёмная
+                <button type="button" id="micBtn" class="btn-mic-sidebar" disabled aria-label="Микрофон">
+                  <span class="mic-btn-icon" id="micBtnIcon" aria-hidden="true"></span>
                 </button>
               </div>
               <p id="status">Не подключено</p>
@@ -440,7 +692,30 @@
         </div>
       </aside>
       <main class="chat-main">
-        <div class="chat-header">Чат</div>
+        <header class="chat-header">
+          <span class="chat-header-title">Чат</span>
+          <div class="chat-header-menu">
+            <button
+              type="button"
+              id="chatMenuBtn"
+              class="btn-ellipsis"
+              aria-label="Меню"
+              aria-expanded="false"
+              aria-haspopup="true"
+              title="Меню"
+            >
+              ⋮
+            </button>
+            <div id="chatDropdown" class="chat-dropdown" role="menu" hidden>
+              <button type="button" id="menuThemeBtn" class="dropdown-item" role="menuitem">
+                Тема: тёмная
+              </button>
+              <button type="button" id="menuAdminBtn" class="dropdown-item" role="menuitem">
+                Админ-панель
+              </button>
+            </div>
+          </div>
+        </header>
         <div id="chatLog" aria-live="polite" tabindex="0" title="Кликните здесь и вставьте фото (Ctrl+V)"></div>
         <footer class="chat-footer">
           <input id="chatImageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
@@ -452,6 +727,34 @@
         </footer>
       </main>
     </div>
-    <script src="./app.js?v=15"></script>
+    <div id="adminModal" class="modal-overlay" hidden>
+      <div class="modal-dialog" role="dialog" aria-labelledby="adminModalTitle" aria-modal="true">
+        <h2 id="adminModalTitle">Админ-панель</h2>
+        <div id="adminAuthSection" class="admin-auth-section">
+          <label for="adminPasswordInput">Пароль</label>
+          <input
+            id="adminPasswordInput"
+            type="password"
+            autocomplete="current-password"
+            maxlength="128"
+            placeholder="••••••••"
+          />
+          <p id="adminAuthError" class="admin-auth-error" hidden role="alert"></p>
+          <p id="adminJoinHint" class="modal-footnote" style="margin-top: 0">
+            Сначала войдите в комнату (кнопка «Войти»).
+          </p>
+          <button type="button" id="adminAuthSubmit" class="btn-primary">Войти</button>
+        </div>
+        <div id="adminPanelBody" hidden>
+          <h3 class="modal-subtitle">Участники</h3>
+          <ul id="adminParticipantsList" class="admin-participant-list" aria-label="Список участников"></ul>
+          <button type="button" id="adminLogoutBtn" class="btn-text">Выйти из админки</button>
+        </div>
+        <div class="admin-modal-actions">
+          <button type="button" id="adminModalClose" class="btn-primary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <script src="./app.js?v=24"></script>
   </body>
 </html>

@@ -60,7 +60,9 @@ function forceDisconnectClient() {
   for (const peerNickname of Array.from(peers.keys())) {
     removePeer(peerNickname);
   }
-  micBtn.disabled = true;
+  if (micBtn) {
+    micBtn.disabled = true;
+  }
   setChatEnabled(false);
   if (leaveBtn) {
     leaveBtn.disabled = true;
@@ -91,6 +93,21 @@ const nicknameInput = document.getElementById("nickname");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const micBtn = document.getElementById("micBtn");
+const micBtnIcon = document.getElementById("micBtnIcon");
+const chatMenuBtn = document.getElementById("chatMenuBtn");
+const chatDropdown = document.getElementById("chatDropdown");
+const menuThemeBtn = document.getElementById("menuThemeBtn");
+const menuAdminBtn = document.getElementById("menuAdminBtn");
+const adminModal = document.getElementById("adminModal");
+const adminModalClose = document.getElementById("adminModalClose");
+const adminParticipantsList = document.getElementById("adminParticipantsList");
+const adminAuthSection = document.getElementById("adminAuthSection");
+const adminPanelBody = document.getElementById("adminPanelBody");
+const adminPasswordInput = document.getElementById("adminPasswordInput");
+const adminAuthSubmit = document.getElementById("adminAuthSubmit");
+const adminAuthError = document.getElementById("adminAuthError");
+const adminJoinHint = document.getElementById("adminJoinHint");
+const adminLogoutBtn = document.getElementById("adminLogoutBtn");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
 const chatLog = document.getElementById("chatLog");
@@ -98,9 +115,12 @@ const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
 const chatImageInput = document.getElementById("chatImageInput");
 const chatImageBtn = document.getElementById("chatImageBtn");
-const themeBtn = document.getElementById("themeBtn");
 
 const peers = new Map();
+
+const MIC_ICON_ON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
+
+const MIC_ICON_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
 const remoteAudioByPeer = new Map();
 const hearByPeer = new Map();
 const pendingIceByPeer = new Map();
@@ -157,6 +177,13 @@ let localStream = null;
 let micEnabled = true;
 let joinedRoom = false;
 let rtcChain = Promise.resolve();
+/** Если не null, socket.onclose не затирает статус сообщением «Отключено» (исключение из комнаты). */
+let pendingKickedDisconnectStatus = null;
+
+let cachedAdminSecret = null;
+let adminServerPeers = [];
+let pendingAdminSecretAttempt = null;
+let awaitingAdminVerifyResponse = false;
 
 function enqueueRtc(fn) {
   rtcChain = rtcChain.then(fn).catch((e) => console.error("WebRTC queue:", e));
@@ -553,7 +580,17 @@ async function sendChatImage(file, caption) {
 }
 
 function setMicButtonState() {
-  micBtn.textContent = `Мик: ${micEnabled ? "вкл" : "выкл"}`;
+  const labelOn = "Выключить микрофон";
+  const labelOff = "Включить микрофон";
+  const titleOn = "Микрофон включён — нажмите, чтобы выключить";
+  const titleOff = "Микрофон выключен — нажмите, чтобы включить";
+  if (micBtnIcon) {
+    micBtnIcon.innerHTML = micEnabled ? MIC_ICON_ON : MIC_ICON_OFF;
+  }
+  if (micBtn) {
+    micBtn.setAttribute("aria-label", micEnabled ? labelOn : labelOff);
+    micBtn.setAttribute("title", micEnabled ? titleOn : titleOff);
+  }
 }
 
 function setMicEnabled(enabled) {
@@ -714,6 +751,142 @@ function renderParticipants() {
 
     participantsEl.appendChild(li);
   }
+
+  syncAdminParticipantListIfVisible();
+}
+
+function updateAdminJoinHint() {
+  if (adminJoinHint) {
+    adminJoinHint.hidden = joinedRoom;
+  }
+  if (adminAuthSubmit) {
+    adminAuthSubmit.disabled = !joinedRoom;
+  }
+}
+
+function clearCachedAdminSession() {
+  cachedAdminSecret = null;
+  adminServerPeers = [];
+  pendingAdminSecretAttempt = null;
+  awaitingAdminVerifyResponse = false;
+  if (adminPasswordInput) {
+    adminPasswordInput.value = "";
+  }
+  if (adminAuthError) {
+    adminAuthError.textContent = "";
+    adminAuthError.hidden = true;
+  }
+}
+
+function updateAdminModalLayout() {
+  const authed = Boolean(cachedAdminSecret);
+  if (adminAuthSection) {
+    adminAuthSection.hidden = authed;
+  }
+  if (adminPanelBody) {
+    adminPanelBody.hidden = !authed;
+  }
+  updateAdminJoinHint();
+}
+
+function requestAdminPeerList() {
+  if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  socket.send(JSON.stringify({ type: "admin-peers", secret: cachedAdminSecret }));
+}
+
+function notifyAdminRosterRefresh() {
+  if (!adminModal || adminModal.hidden || !cachedAdminSecret) {
+    return;
+  }
+  requestAdminPeerList();
+}
+
+function submitAdminPassword() {
+  if (adminAuthError) {
+    adminAuthError.hidden = true;
+    adminAuthError.textContent = "";
+  }
+  if (!joinedRoom || !socket || socket.readyState !== WebSocket.OPEN) {
+    if (adminAuthError) {
+      adminAuthError.textContent = "Нужно быть в комнате.";
+      adminAuthError.hidden = false;
+    }
+    return;
+  }
+  const secret = String(adminPasswordInput ? adminPasswordInput.value : "").trim();
+  if (!secret) {
+    if (adminAuthError) {
+      adminAuthError.textContent = "Введите пароль.";
+      adminAuthError.hidden = false;
+    }
+    return;
+  }
+  pendingAdminSecretAttempt = secret;
+  awaitingAdminVerifyResponse = true;
+  socket.send(JSON.stringify({ type: "admin-verify", secret }));
+}
+
+function renderAdminParticipantList() {
+  if (!adminParticipantsList) {
+    return;
+  }
+  adminParticipantsList.innerHTML = "";
+  if (!cachedAdminSecret) {
+    return;
+  }
+  if (!joinedRoom || !myNickname) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Нет подключения к комнате.";
+    adminParticipantsList.appendChild(li);
+    return;
+  }
+  const sorted = [...adminServerPeers].sort((a, b) => a.localeCompare(b, "ru"));
+  if (sorted.length === 0) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Список пуст.";
+    adminParticipantsList.appendChild(li);
+    return;
+  }
+  for (const name of sorted) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-row";
+    const span = document.createElement("span");
+    span.className = "admin-participant-name";
+    span.textContent = name === myNickname ? `${name} (вы)` : name;
+    li.appendChild(span);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-kick";
+    btn.textContent = "Исключить";
+    btn.setAttribute("aria-label", `Исключить ${name} из комнаты`);
+    btn.addEventListener("click", () => {
+      requestKickParticipant(name);
+    });
+    li.appendChild(btn);
+    adminParticipantsList.appendChild(li);
+  }
+}
+
+function syncAdminParticipantListIfVisible() {
+  if (!adminModal || adminModal.hidden) {
+    return;
+  }
+  if (cachedAdminSecret && socket && socket.readyState === WebSocket.OPEN && joinedRoom) {
+    requestAdminPeerList();
+  } else {
+    renderAdminParticipantList();
+  }
+}
+
+function requestKickParticipant(targetNick) {
+  if (!targetNick || !cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  socket.send(JSON.stringify({ type: "admin-kick", target: targetNick, secret: cachedAdminSecret }));
 }
 
 function sendSignal(target, payload) {
@@ -918,13 +1091,16 @@ function connectSocket() {
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
           setStatus(`В сети как ${message.nickname}`);
-          micBtn.disabled = false;
+          if (micBtn) {
+            micBtn.disabled = false;
+          }
           setChatEnabled(true);
           for (const peerNickname of message.peers) {
             await createPeerConnection(peerNickname, false);
           }
         });
         await rtcChain;
+        updateAdminJoinHint();
         break;
       case "chat-history":
         renderChatHistory(message.messages || []);
@@ -948,6 +1124,7 @@ function connectSocket() {
           leaveBtn.disabled = true;
         }
         clearRejoinHint();
+        updateAdminJoinHint();
         break;
       case "peer-joined":
         enqueueRtc(async () => {
@@ -955,10 +1132,37 @@ function connectSocket() {
           setStatus(`${message.nickname} вошёл`);
         });
         await rtcChain;
+        notifyAdminRosterRefresh();
         break;
       case "peer-left":
         removePeer(message.nickname);
         setStatus(`${message.nickname} вышел`);
+        notifyAdminRosterRefresh();
+        break;
+      case "admin-verify-ok":
+        awaitingAdminVerifyResponse = false;
+        cachedAdminSecret = pendingAdminSecretAttempt;
+        pendingAdminSecretAttempt = null;
+        if (adminPasswordInput) {
+          adminPasswordInput.value = "";
+        }
+        if (adminAuthError) {
+          adminAuthError.hidden = true;
+        }
+        updateAdminModalLayout();
+        requestAdminPeerList();
+        break;
+      case "admin-peers-result":
+        adminServerPeers = Array.isArray(message.peers) ? message.peers : [];
+        renderAdminParticipantList();
+        break;
+      case "kicked":
+        clearCachedAdminSession();
+        updateAdminModalLayout();
+        pendingKickedDisconnectStatus = message.reason || "Вас исключили из комнаты.";
+        setStatus(pendingKickedDisconnectStatus);
+        clearRejoinHint();
+        forceDisconnectClient();
         break;
       case "signal":
         enqueueRtc(() => handleSignal(message.from, message.payload));
@@ -969,6 +1173,20 @@ function connectSocket() {
         break;
       case "error":
         console.error("Server error:", message.message);
+        if (awaitingAdminVerifyResponse) {
+          awaitingAdminVerifyResponse = false;
+          pendingAdminSecretAttempt = null;
+          if (adminAuthError) {
+            let errText = message.message || "Ошибка.";
+            if (/unknown message type:\s*admin-verify/i.test(errText)) {
+              errText =
+                "Сервер старой версии (нет admin-verify). Остановите процесс и снова запустите npm start в папке сервера или выполните docker compose build && docker compose up.";
+            }
+            adminAuthError.textContent = errText;
+            adminAuthError.hidden = false;
+          }
+          break;
+        }
         setStatus(`Ошибка: ${message.message}`);
         break;
       default:
@@ -978,11 +1196,22 @@ function connectSocket() {
 
   socket.onclose = () => {
     try {
+      clearCachedAdminSession();
+      updateAdminModalLayout();
+      renderAdminParticipantList();
+      const skipGenericDisconnectMsg = pendingKickedDisconnectStatus !== null;
+      if (pendingKickedDisconnectStatus !== null) {
+        pendingKickedDisconnectStatus = null;
+      }
       joinedRoom = false;
       socket = null;
       rtcChain = Promise.resolve();
-      setStatus("Отключено");
-      micBtn.disabled = true;
+      if (!skipGenericDisconnectMsg) {
+        setStatus("Отключено");
+      }
+      if (micBtn) {
+        micBtn.disabled = true;
+      }
       setChatEnabled(false);
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
@@ -1002,19 +1231,128 @@ function connectSocket() {
 }
 
 function updateThemeButtonLabel() {
+  if (!menuThemeBtn) {
+    return;
+  }
   const isLight = document.documentElement.getAttribute("data-theme") === "light";
-  themeBtn.textContent = isLight ? "Тема: светлая" : "Тема: тёмная";
-  themeBtn.setAttribute("aria-pressed", isLight ? "false" : "true");
+  menuThemeBtn.textContent = isLight ? "Тема: светлая" : "Тема: тёмная";
+  menuThemeBtn.setAttribute("aria-pressed", isLight ? "false" : "true");
 }
 
-themeBtn.addEventListener("click", () => {
-  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem(LS_THEME, next);
-  updateThemeButtonLabel();
+function setChatMenuOpen(open) {
+  if (!chatDropdown || !chatMenuBtn) {
+    return;
+  }
+  chatDropdown.hidden = !open;
+  chatMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function closeChatMenu() {
+  setChatMenuOpen(false);
+}
+
+function openAdminModal() {
+  if (adminModal) {
+    adminModal.hidden = false;
+  }
+  closeChatMenu();
+  updateAdminModalLayout();
+  if (cachedAdminSecret) {
+    requestAdminPeerList();
+  } else {
+    renderAdminParticipantList();
+  }
+}
+
+function closeAdminModal() {
+  if (adminModal) {
+    adminModal.hidden = true;
+  }
+}
+
+if (chatMenuBtn && chatDropdown) {
+  chatMenuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setChatMenuOpen(chatDropdown.hidden);
+  });
+}
+
+document.addEventListener("click", () => {
+  closeChatMenu();
 });
 
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") {
+    return;
+  }
+  closeChatMenu();
+  closeAdminModal();
+});
+
+if (menuThemeBtn) {
+  menuThemeBtn.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem(LS_THEME, next);
+    updateThemeButtonLabel();
+    closeChatMenu();
+  });
+}
+
+if (menuAdminBtn) {
+  menuAdminBtn.addEventListener("click", () => {
+    openAdminModal();
+  });
+}
+
+if (adminAuthSubmit) {
+  adminAuthSubmit.addEventListener("click", () => {
+    submitAdminPassword();
+  });
+}
+
+if (adminPasswordInput) {
+  adminPasswordInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitAdminPassword();
+    }
+  });
+}
+
+if (adminLogoutBtn) {
+  adminLogoutBtn.addEventListener("click", () => {
+    clearCachedAdminSession();
+    updateAdminModalLayout();
+    renderAdminParticipantList();
+    if (adminPasswordInput) {
+      adminPasswordInput.focus();
+    }
+  });
+}
+
+if (adminModalClose) {
+  adminModalClose.addEventListener("click", () => {
+    closeAdminModal();
+  });
+}
+
+if (adminModal) {
+  adminModal.addEventListener("click", (e) => {
+    if (e.target === adminModal) {
+      closeAdminModal();
+    }
+  });
+}
+
 updateThemeButtonLabel();
+
+(function initMicUiFromStorage() {
+  try {
+    micEnabled = localStorage.getItem(LS_MIC_ENABLED) !== "0";
+  } catch (_) {}
+  setMicButtonState();
+})();
 
 async function join(options = {}) {
   const fromAutoRejoin = options.fromAutoRejoin === true;
@@ -1085,9 +1423,15 @@ if (leaveBtn) {
   });
 }
 
-micBtn.addEventListener("click", () => {
+function toggleMicFromUi() {
   setMicEnabled(!micEnabled);
-});
+}
+
+if (micBtn) {
+  micBtn.addEventListener("click", () => {
+    toggleMicFromUi();
+  });
+}
 
 chatSendBtn.addEventListener("click", () => {
   sendChat();
