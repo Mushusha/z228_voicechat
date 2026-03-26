@@ -383,6 +383,131 @@ function broadcastChannelListGlobally() {
   }
 }
 
+function broadcastToAllClients(payload) {
+  for (const wss of wssList) {
+    for (const client of wss.clients) {
+      send(client, payload);
+    }
+  }
+}
+
+function sendChatHistoryToSocket(ws, textChannel) {
+  void (async () => {
+    try {
+      let messages;
+      if (mongoReady && mongoose.connection.readyState === 1) {
+        const filter = chatHistoryMongoFilter(textChannel);
+        const docs = await ChatMessage.find(filter).sort({ createdAt: -1 }).limit(100).lean();
+        messages = docs.reverse().map((d) => ({
+          id: String(d._id),
+          nickname: d.nickname,
+          text: d.text || "",
+          createdAt: d.createdAt.toISOString(),
+          imageMime: d.imageMime || undefined,
+          imageData: d.imageData || undefined,
+          reactions: serializeReactionsForPayload(d.reactions),
+        }));
+      } else {
+        messages = memoryChatHistoryPayload(textChannel);
+      }
+      send(ws, { type: "chat-history", messages });
+    } catch (error) {
+      console.error("chat-history:", error);
+      send(ws, { type: "error", message: "Не удалось загрузить историю чата." });
+    }
+  })();
+}
+
+/**
+ * Смена текстового и/или голосового канала без повторного join.
+ * Возвращает { ok: true } или { ok: false, reason }.
+ * options.skipChannelListBroadcast — не вызывать broadcast (для пакетного admin-channel-remove).
+ */
+function performChannelSwitch(ws, sender, newT, newV, options = {}) {
+  const nickname = sender.nickname;
+  const oldT = sender.textChannel;
+  const oldV = sender.voiceChannel;
+
+  if (oldT === newT && oldV === newV) {
+    const peers = Array.from(getNickMapVoice(newV).keys()).filter((name) => name !== nickname);
+    send(ws, {
+      type: "channels-switched",
+      textChannel: newT,
+      voiceChannel: newV,
+      channel: newT,
+      peers,
+      textChannelChanged: false,
+      voiceChannelChanged: false,
+    });
+    return { ok: true };
+  }
+
+  if (newT !== oldT) {
+    const nt = getNickMapText(newT);
+    if (nt.has(nickname) && nt.get(nickname) !== ws) {
+      return { ok: false, reason: "Этот ник уже занят в целевом текстовом канале." };
+    }
+  }
+  if (newV !== oldV) {
+    const nv = getNickMapVoice(newV);
+    if (nv.has(nickname) && nv.get(nickname) !== ws) {
+      return { ok: false, reason: "Этот ник уже занят в целевом голосовом канале." };
+    }
+  }
+
+  if (oldT !== newT) {
+    getNickMapText(oldT).delete(nickname);
+  }
+  if (oldV !== newV) {
+    getNickMapVoice(oldV).delete(nickname);
+    broadcastToVoiceChannel(oldV, {
+      type: "peer-left",
+      nickname,
+    });
+  }
+
+  sender.textChannel = newT;
+  sender.voiceChannel = newV;
+
+  if (oldT !== newT) {
+    getNickMapText(newT).set(nickname, ws);
+  }
+  if (oldV !== newV) {
+    getNickMapVoice(newV).set(nickname, ws);
+    broadcastToVoiceChannel(
+      newV,
+      {
+        type: "peer-joined",
+        nickname,
+      },
+      ws
+    );
+  }
+
+  knownTextChannelNames.add(newT);
+  knownVoiceChannelNames.add(newV);
+  if (!options.skipChannelListBroadcast) {
+    broadcastChannelListGlobally();
+  }
+
+  const peers = Array.from(getNickMapVoice(newV).keys()).filter((name) => name !== nickname);
+  send(ws, {
+    type: "channels-switched",
+    textChannel: newT,
+    voiceChannel: newV,
+    channel: newT,
+    peers,
+    textChannelChanged: oldT !== newT,
+    voiceChannelChanged: oldV !== newV,
+  });
+
+  if (oldT !== newT) {
+    sendChatHistoryToSocket(ws, newT);
+  }
+
+  return { ok: true };
+}
+
 function leave(ws) {
   const client = clientsBySocket.get(ws);
   if (!client) {
@@ -441,6 +566,8 @@ function attachWebSocketServer(server) {
         "kicked",
         "admin-verify-ok",
         "admin-peers-result",
+        "channels-switched",
+        "channel-removed",
       ]);
       if (clientShouldNotSend.has(msgType)) {
         return;
@@ -523,36 +650,39 @@ function attachWebSocketServer(server) {
         );
         broadcastChannelListGlobally();
 
-        void (async () => {
-          try {
-            let messages;
-            if (mongoReady && mongoose.connection.readyState === 1) {
-              const filter = chatHistoryMongoFilter(textChannel);
-              const docs = await ChatMessage.find(filter).sort({ createdAt: -1 }).limit(100).lean();
-              messages = docs.reverse().map((d) => ({
-                id: String(d._id),
-                nickname: d.nickname,
-                text: d.text || "",
-                createdAt: d.createdAt.toISOString(),
-                imageMime: d.imageMime || undefined,
-                imageData: d.imageData || undefined,
-                reactions: serializeReactionsForPayload(d.reactions),
-              }));
-            } else {
-              messages = memoryChatHistoryPayload(textChannel);
-            }
-            send(ws, { type: "chat-history", messages });
-          } catch (error) {
-            console.error("chat-history:", error);
-            send(ws, { type: "error", message: "Не удалось загрузить историю чата." });
-          }
-        })();
+        sendChatHistoryToSocket(ws, textChannel);
         return;
       }
 
       const sender = clientsBySocket.get(ws);
       if (!sender) {
         send(ws, { type: "error", message: "Сначала войдите в комнату." });
+        return;
+      }
+
+      if (msgType === "switch-channels") {
+        const rawText =
+          message.textChannel !== undefined && message.textChannel !== null
+            ? message.textChannel
+            : message.channel;
+        const rawVoice =
+          message.voiceChannel !== undefined && message.voiceChannel !== null
+            ? message.voiceChannel
+            : message.channel;
+        const textNorm = normalizeChannelInput(rawText);
+        const voiceNorm = normalizeChannelInput(rawVoice);
+        if (!textNorm.ok) {
+          send(ws, { type: "error", message: textNorm.reason });
+          return;
+        }
+        if (!voiceNorm.ok) {
+          send(ws, { type: "error", message: voiceNorm.reason });
+          return;
+        }
+        const result = performChannelSwitch(ws, sender, textNorm.channel, voiceNorm.channel);
+        if (!result.ok) {
+          send(ws, { type: "error", message: result.reason });
+        }
         return;
       }
 
@@ -860,6 +990,61 @@ function attachWebSocketServer(server) {
         return;
       }
 
+      if (msgType === "admin-channel-remove") {
+        if (!adminPanelSecretOk(message)) {
+          send(ws, { type: "error", message: "Неверный пароль админ-панели." });
+          return;
+        }
+        const kind = String(message.kind || "").trim().toLowerCase();
+        if (kind !== "text" && kind !== "voice") {
+          send(ws, { type: "error", message: "Укажите kind: text или voice." });
+          return;
+        }
+        const nameNorm = normalizeChannelInput(message.name ?? message.channel);
+        if (!nameNorm.ok) {
+          send(ws, { type: "error", message: nameNorm.reason });
+          return;
+        }
+        const chName = nameNorm.channel;
+        if (chName === DEFAULT_CHANNEL) {
+          send(ws, { type: "error", message: "Канал general нельзя удалить." });
+          return;
+        }
+        const toMove = [];
+        for (const [sock, c] of clientsBySocket) {
+          if (kind === "text" && c.textChannel === chName) {
+            toMove.push(sock);
+          } else if (kind === "voice" && c.voiceChannel === chName) {
+            toMove.push(sock);
+          }
+        }
+        for (const sock of toMove) {
+          const c = clientsBySocket.get(sock);
+          if (!c) continue;
+          if (kind === "text") {
+            performChannelSwitch(sock, c, DEFAULT_CHANNEL, c.voiceChannel, {
+              skipChannelListBroadcast: true,
+            });
+          } else {
+            performChannelSwitch(sock, c, c.textChannel, DEFAULT_CHANNEL, {
+              skipChannelListBroadcast: true,
+            });
+          }
+        }
+        if (kind === "text") {
+          knownTextChannelNames.delete(chName);
+        } else {
+          knownVoiceChannelNames.delete(chName);
+        }
+        broadcastToAllClients({
+          type: "channel-removed",
+          kind,
+          name: chName,
+        });
+        broadcastChannelListGlobally();
+        return;
+      }
+
       console.warn("Unknown WebSocket message type:", msgType, message);
       send(ws, {
         type: "error",
@@ -901,7 +1086,9 @@ async function start() {
   httpServer.listen(listenOptions(PORT), () => {
     const hostHint = process.env.LISTEN_HOST || ":: (all interfaces, IPv4+IPv6)";
     console.log(`HTTP: http://127.0.0.1:${PORT} — listening ${hostHint}`);
-    console.log("WebSocket: join / chat / signal / admin-verify / admin-peers / admin-kick");
+    console.log(
+      "WebSocket: join / switch-channels / chat / signal / admin-verify / admin-peers / admin-kick / admin-channel-remove"
+    );
   });
 
   if (HTTPS_PORT > 0) {

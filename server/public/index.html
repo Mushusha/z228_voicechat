@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>zalupa228local</title>
+    <title>залупа228local</title>
     <link rel="icon" type="image/png" href="./logo.png" />
     <style>
       *,
@@ -562,6 +562,42 @@
         color: var(--text-muted);
       }
 
+      #chatLog .chat-reaction-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 8px;
+        align-items: center;
+      }
+
+      #chatLog .chat-reaction-bar[hidden] {
+        display: none !important;
+      }
+
+      #chatLog .chat-reaction-pick {
+        padding: 2px 8px;
+        min-width: 36px;
+        min-height: 32px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        font-size: 1.05rem;
+        line-height: 1.2;
+        cursor: pointer;
+        opacity: 0.85;
+      }
+
+      #chatLog .chat-reaction-pick:hover {
+        opacity: 1;
+        background: var(--surface-hover);
+      }
+
+      #chatLog .chat-reaction-pick--active {
+        border-color: var(--accent);
+        background: var(--accent-dim);
+        opacity: 1;
+      }
+
       .chat-footer {
         flex-shrink: 0;
         display: flex;
@@ -845,9 +881,9 @@
       </div>
       <aside class="sidebar" id="roomPanel" role="tabpanel" aria-labelledby="tabRoomBtn">
         <header class="brand">
-          <img class="logo" src="./logo.png" width="88" height="88" alt="zalupa228" />
+          <img class="logo" src="./logo.png" width="88" height="88" alt="залупа228" />
           <div class="brand-text">
-            <span class="brand-name">zalupa228</span>
+            <span class="brand-name">залупа228</span>
             <span class="brand-tag">локальный голос и чат</span>
           </div>
         </header>
@@ -979,6 +1015,12 @@
         <div id="adminPanelBody" hidden>
           <h3 class="modal-subtitle">Участники</h3>
           <ul id="adminParticipantsList" class="admin-participant-list" aria-label="Список участников"></ul>
+          <h3 class="modal-subtitle">Каналы</h3>
+          <p class="modal-footnote" style="margin-top: 0">
+            Удаление: участники с канала переходят в <code>general</code>. Канал <code>general</code> удалить
+            нельзя.
+          </p>
+          <ul id="adminChannelsList" class="admin-participant-list" aria-label="Управление каналами"></ul>
           <button type="button" id="adminLogoutBtn" class="btn-text">Выйти из админки</button>
         </div>
         <div class="admin-modal-actions">
@@ -986,6 +1028,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=36"></script>
+    <script src="./app.js?v=39"></script>
   </body>
 </html>

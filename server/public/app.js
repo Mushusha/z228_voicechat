@@ -134,6 +134,7 @@ const menuAdminBtn = document.getElementById("menuAdminBtn");
 const adminModal = document.getElementById("adminModal");
 const adminModalClose = document.getElementById("adminModalClose");
 const adminParticipantsList = document.getElementById("adminParticipantsList");
+const adminChannelsList = document.getElementById("adminChannelsList");
 const adminAuthSection = document.getElementById("adminAuthSection");
 const adminPanelBody = document.getElementById("adminPanelBody");
 const adminPasswordInput = document.getElementById("adminPasswordInput");
@@ -332,7 +333,11 @@ function renderChannelRoster(payload) {
       btn.appendChild(meta);
       btn.addEventListener("click", () => {
         if (joinedRoom) {
-          setStatus("Чтобы сменить текстовый канал, нажмите «Выйти» и войдите снова.");
+          if (row.name === myTextChannel) {
+            return;
+          }
+          setStatus("Смена текстового канала…");
+          sendSwitchChannels(row.name, myVoiceChannel);
           return;
         }
         selectedTextSlug = row.name;
@@ -369,7 +374,11 @@ function renderChannelRoster(payload) {
       btn.appendChild(meta);
       btn.addEventListener("click", () => {
         if (joinedRoom) {
-          setStatus("Чтобы сменить голосовой канал, нажмите «Выйти» и войдите снова.");
+          if (row.name === myVoiceChannel) {
+            return;
+          }
+          setStatus("Смена голосового канала…");
+          sendSwitchChannels(myTextChannel, row.name);
           return;
         }
         selectedVoiceSlug = row.name;
@@ -484,6 +493,9 @@ function formatChatTime(iso) {
   }
 }
 
+/** Быстрые реакции в чате (сервер: chat-react, длина эмодзи до 16). */
+const CHAT_QUICK_REACTIONS = ["👍", "❤️", "😂", "🔥", "👀"];
+
 function formatReactionsSummary(reactions) {
   if (!reactions || typeof reactions !== "object") {
     return "";
@@ -495,6 +507,69 @@ function formatReactionsSummary(reactions) {
     }
   }
   return parts.length ? parts.join(" ") : "";
+}
+
+function sendChatReaction(messageId, emoji) {
+  if (!joinedRoom || serverChatMessageOps === false) {
+    return;
+  }
+  if (!messageId || !emoji) {
+    return;
+  }
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    setStatus("Нет соединения.");
+    return;
+  }
+  try {
+    socket.send(
+      JSON.stringify({
+        type: "chat-react",
+        id: String(messageId),
+        emoji: String(emoji),
+      })
+    );
+  } catch (e) {
+    console.error(e);
+    setStatus("Не удалось отправить реакцию.");
+  }
+}
+
+function syncReactionBarState(bar, reactions) {
+  if (!bar || !myNickname) {
+    return;
+  }
+  const react = reactions && typeof reactions === "object" ? reactions : {};
+  bar.querySelectorAll("button[data-react-emoji]").forEach((btn) => {
+    const em = btn.getAttribute("data-react-emoji");
+    const list = react[em];
+    const on = Array.isArray(list) && list.includes(myNickname);
+    btn.classList.toggle("chat-reaction-pick--active", on);
+  });
+}
+
+function appendReactionBar(line, reactions) {
+  const id = line.dataset.chatMsgId;
+  if (!id || serverChatMessageOps === false) {
+    return;
+  }
+  const bar = document.createElement("div");
+  bar.className = "chat-reaction-bar";
+  for (const em of CHAT_QUICK_REACTIONS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-reaction-pick";
+    btn.setAttribute("data-react-emoji", em);
+    btn.setAttribute("aria-label", `Реакция ${em}`);
+    btn.title = em;
+    btn.textContent = em;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sendChatReaction(id, em);
+    });
+    bar.appendChild(btn);
+  }
+  line.appendChild(bar);
+  syncReactionBarState(bar, reactions);
 }
 
 function findChatLineByMsgId(id) {
@@ -527,6 +602,10 @@ function applyChatMessageReactions(id, reactions) {
   const line = findChatLineByMsgId(id);
   if (!line) {
     return;
+  }
+  const bar = line.querySelector(".chat-reaction-bar");
+  if (bar) {
+    syncReactionBarState(bar, reactions);
   }
   let rEl = line.querySelector(".chat-reactions-summary");
   const summary = formatReactionsSummary(reactions);
@@ -637,6 +716,10 @@ function appendChatMessage({ id, nickname, text, createdAt, imageMime, imageData
   }
   line.appendChild(meta);
   line.appendChild(body);
+  appendReactionBar(
+    line,
+    reactions != null && typeof reactions === "object" ? reactions : {}
+  );
   const reactSummary = formatReactionsSummary(reactions);
   if (reactSummary) {
     const rEl = document.createElement("div");
@@ -1054,6 +1137,9 @@ function updateAdminModalLayout() {
   if (adminPanelBody) {
     adminPanelBody.hidden = !authed;
   }
+  if (authed) {
+    renderAdminChannelsPanel();
+  }
   updateAdminJoinHint();
 }
 
@@ -1065,6 +1151,7 @@ function requestAdminPeerList() {
 }
 
 function notifyAdminRosterRefresh() {
+  renderAdminChannelsPanel();
   if (!adminModal || adminModal.hidden || !cachedAdminSecret) {
     return;
   }
@@ -1119,46 +1206,50 @@ function renderAdminParticipantList() {
   if (!adminParticipantsList) {
     return;
   }
-  adminParticipantsList.innerHTML = "";
-  if (!cachedAdminSecret) {
-    return;
-  }
-  if (!joinedRoom || !myNickname) {
-    const li = document.createElement("li");
-    li.className = "admin-participant-hint";
-    li.textContent = "Нет подключения к комнате.";
-    adminParticipantsList.appendChild(li);
-    return;
-  }
-  const rows = adminServerPeers
-    .map(normalizeAdminPeerEntry)
-    .filter((r) => r.nickname)
-    .sort((a, b) => a.nickname.localeCompare(b.nickname, "ru"));
-  if (rows.length === 0) {
-    const li = document.createElement("li");
-    li.className = "admin-participant-hint";
-    li.textContent = "Список пуст.";
-    adminParticipantsList.appendChild(li);
-    return;
-  }
-  for (const row of rows) {
-    const li = document.createElement("li");
-    li.className = "admin-participant-row";
-    const span = document.createElement("span");
-    span.className = "admin-participant-name";
-    span.textContent =
-      row.nickname === myNickname ? `${row.display} (вы)` : row.display;
-    li.appendChild(span);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn-kick";
-    btn.textContent = "Исключить";
-    btn.setAttribute("aria-label", `Исключить ${row.nickname} из комнаты`);
-    btn.addEventListener("click", () => {
-      requestKickParticipant(row.nickname);
-    });
-    li.appendChild(btn);
-    adminParticipantsList.appendChild(li);
+  try {
+    adminParticipantsList.innerHTML = "";
+    if (!cachedAdminSecret) {
+      return;
+    }
+    if (!joinedRoom || !myNickname) {
+      const li = document.createElement("li");
+      li.className = "admin-participant-hint";
+      li.textContent = "Нет подключения к комнате.";
+      adminParticipantsList.appendChild(li);
+      return;
+    }
+    const rows = adminServerPeers
+      .map(normalizeAdminPeerEntry)
+      .filter((r) => r.nickname)
+      .sort((a, b) => a.nickname.localeCompare(b.nickname, "ru"));
+    if (rows.length === 0) {
+      const li = document.createElement("li");
+      li.className = "admin-participant-hint";
+      li.textContent = "Список пуст.";
+      adminParticipantsList.appendChild(li);
+      return;
+    }
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = "admin-participant-row";
+      const span = document.createElement("span");
+      span.className = "admin-participant-name";
+      span.textContent =
+        row.nickname === myNickname ? `${row.display} (вы)` : row.display;
+      li.appendChild(span);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-kick";
+      btn.textContent = "Исключить";
+      btn.setAttribute("aria-label", `Исключить ${row.nickname} из комнаты`);
+      btn.addEventListener("click", () => {
+        requestKickParticipant(row.nickname);
+      });
+      li.appendChild(btn);
+      adminParticipantsList.appendChild(li);
+    }
+  } finally {
+    renderAdminChannelsPanel();
   }
 }
 
@@ -1178,6 +1269,126 @@ function requestKickParticipant(targetNick) {
     return;
   }
   socket.send(JSON.stringify({ type: "admin-kick", target: targetNick, secret: cachedAdminSecret }));
+}
+
+function removeCustomSlugFromStorage(kind, rawName) {
+  const slug = String(rawName || "")
+    .trim()
+    .toLowerCase();
+  if (!slug) {
+    return;
+  }
+  const key = kind === "text" ? LS_CUSTOM_TEXT : LS_CUSTOM_VOICE;
+  const cur = readCustomSlugs(key);
+  const next = cur.filter((s) => s !== slug);
+  if (next.length !== cur.length) {
+    writeCustomSlugs(key, next);
+  }
+}
+
+function renderAdminChannelsPanel() {
+  if (!adminChannelsList) {
+    return;
+  }
+  if (!cachedAdminSecret) {
+    adminChannelsList.innerHTML = "";
+    return;
+  }
+  adminChannelsList.innerHTML = "";
+  const p = lastChannelListPayload;
+  if (!p) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Список каналов ещё не загружен.";
+    adminChannelsList.appendChild(li);
+    return;
+  }
+  const legacyText = Array.isArray(p.channels)
+    ? p.channels.map((c) => ({ name: c.name, online: c.online }))
+    : null;
+  const textRows = mergeChannelRows(
+    DEFAULT_TEXT_SLUGS,
+    p.textChannels || legacyText,
+    readCustomSlugs(LS_CUSTOM_TEXT)
+  );
+  const voiceRows = mergeChannelRows(
+    DEFAULT_VOICE_SLUGS,
+    p.voiceChannels || [],
+    readCustomSlugs(LS_CUSTOM_VOICE)
+  );
+
+  const addHint = (text) => {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = text;
+    adminChannelsList.appendChild(li);
+  };
+
+  addHint("Текстовые");
+  for (const row of textRows) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-row";
+    const span = document.createElement("span");
+    span.className = "admin-participant-name";
+    span.textContent = `#${row.name}`;
+    li.appendChild(span);
+    if (row.name !== "general") {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-kick";
+      btn.textContent = "Удалить";
+      btn.setAttribute("aria-label", `Удалить текстовый канал ${row.name}`);
+      btn.addEventListener("click", () => {
+        requestAdminRemoveChannel("text", row.name);
+      });
+      li.appendChild(btn);
+    }
+    adminChannelsList.appendChild(li);
+  }
+
+  addHint("Голосовые");
+  for (const row of voiceRows) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-row";
+    const span = document.createElement("span");
+    span.className = "admin-participant-name";
+    span.textContent = `🔊 ${row.name}`;
+    li.appendChild(span);
+    if (row.name !== "general") {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-kick";
+      btn.textContent = "Удалить";
+      btn.setAttribute("aria-label", `Удалить голосовой канал ${row.name}`);
+      btn.addEventListener("click", () => {
+        requestAdminRemoveChannel("voice", row.name);
+      });
+      li.appendChild(btn);
+    }
+    adminChannelsList.appendChild(li);
+  }
+}
+
+function requestAdminRemoveChannel(kind, name) {
+  if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  const label = kind === "text" ? `#${name}` : `🔊 ${name}`;
+  if (
+    !window.confirm(
+      `Удалить канал ${label}? Все участники на нём будут перенесены в general.`
+    )
+  ) {
+    return;
+  }
+  socket.send(
+    JSON.stringify({
+      type: "admin-channel-remove",
+      kind,
+      name,
+      secret: cachedAdminSecret,
+    })
+  );
 }
 
 function sendSignal(target, payload) {
@@ -1289,6 +1500,66 @@ function removePeer(peerNickname) {
   renderParticipants();
 }
 
+function sendSwitchChannels(nextText, nextVoice) {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  socket.send(
+    JSON.stringify({
+      type: "switch-channels",
+      textChannel: nextText,
+      voiceChannel: nextVoice,
+    })
+  );
+}
+
+function applyChannelsSwitched(message) {
+  const nextT = message.textChannel || message.channel || myTextChannel;
+  const nextV = message.voiceChannel || myVoiceChannel;
+  const textChanged = message.textChannelChanged === true;
+  const voiceChanged = message.voiceChannelChanged === true;
+
+  myTextChannel = nextT;
+  myVoiceChannel = nextV;
+  myChannel = myTextChannel;
+  localStorage.setItem(LS_TEXT_CHANNEL, myTextChannel);
+  localStorage.setItem(LS_VOICE_CHANNEL, myVoiceChannel);
+  sessionStorage.setItem(SS_TEXT_CHANNEL, myTextChannel);
+  sessionStorage.setItem(SS_VOICE_CHANNEL, myVoiceChannel);
+  updateChatHeaderTitle();
+  updatePickHint();
+  if (lastChannelListPayload) {
+    renderChannelRoster(null);
+  }
+
+  if (textChanged) {
+    renderChatHistory([]);
+  }
+
+  let statusLine = `В сети как ${myNickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`;
+  if (serverChatMessageOps === false) {
+    statusLine += ". Сервер устарел: нет правок чата — обновите backend.";
+  }
+
+  if (voiceChanged) {
+    enqueueRtc(async () => {
+      for (const peerNickname of Array.from(peers.keys())) {
+        removePeer(peerNickname);
+      }
+      const peerList = Array.isArray(message.peers) ? message.peers : [];
+      for (const ph of peerList) {
+        await createPeerConnection(ph, false);
+      }
+      setStatus(statusLine);
+    });
+  } else {
+    setStatus(statusLine);
+  }
+
+  updateAdminJoinHint();
+  notifyAdminRosterRefresh();
+}
+
 async function handleSignal(from, payload) {
   const pc = await createPeerConnection(from, false);
 
@@ -1372,6 +1643,9 @@ function connectSocket() {
     switch (message.type) {
       case "hello":
         serverChatMessageOps = message.chatMessageOps === true;
+        document.querySelectorAll(".chat-reaction-bar").forEach((el) => {
+          el.hidden = serverChatMessageOps === false;
+        });
         if (joinedRoom && serverChatMessageOps === false) {
           setStatus(
             `${myNickname ? `В сети как ${myNickname}. ` : ""}На сервере нет правок чата — обновите backend (rebuild образа Docker).`
@@ -1382,6 +1656,35 @@ function connectSocket() {
         renderChannelRoster(message);
         notifyAdminRosterRefresh();
         break;
+      case "channels-switched":
+        applyChannelsSwitched(message);
+        await rtcChain;
+        break;
+      case "channel-removed": {
+        const rk = String(message.kind || "").toLowerCase();
+        if (rk === "text" || rk === "voice") {
+          removeCustomSlugFromStorage(rk, message.name);
+        }
+        const removedSlug = String(message.name || "")
+          .trim()
+          .toLowerCase();
+        if (!joinedRoom && removedSlug) {
+          if (rk === "text" && selectedTextSlug === removedSlug) {
+            selectedTextSlug = "general";
+            localStorage.setItem(LS_TEXT_CHANNEL, "general");
+          }
+          if (rk === "voice" && selectedVoiceSlug === removedSlug) {
+            selectedVoiceSlug = "general";
+            localStorage.setItem(LS_VOICE_CHANNEL, "general");
+          }
+          updatePickHint();
+        }
+        if (lastChannelListPayload) {
+          renderChannelRoster(null);
+        }
+        renderAdminChannelsPanel();
+        break;
+      }
       case "join-accepted":
         joinBtn.disabled = true;
         nicknameInput.disabled = true;
@@ -1390,6 +1693,7 @@ function connectSocket() {
         myVoiceChannel = message.voiceChannel || pendingJoinVoice;
         myChannel = myTextChannel;
         joinedRoom = true;
+        myNickname = message.nickname;
         localStorage.setItem(LS_TEXT_CHANNEL, myTextChannel);
         localStorage.setItem(LS_VOICE_CHANNEL, myVoiceChannel);
         sessionStorage.setItem(SS_TEXT_CHANNEL, myTextChannel);
