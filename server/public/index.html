@@ -343,6 +343,10 @@
         background: var(--bg);
       }
 
+      .chat-main.chat-main-drag {
+        box-shadow: inset 0 0 0 2px var(--accent);
+      }
+
       .chat-header {
         flex-shrink: 0;
         padding: 10px 16px 10px 20px;
@@ -588,7 +592,7 @@
         flex: 1;
         min-height: 0;
         overflow-y: auto;
-        padding: 16px 20px;
+        padding: 16px 20px 28px;
         font-size: 0.9375rem;
         line-height: 1.45;
         outline: none;
@@ -599,8 +603,23 @@
       }
 
       #chatLog .chat-line {
-        margin-bottom: 14px;
+        position: relative;
+        margin-bottom: 12px;
         word-break: break-word;
+      }
+
+      #chatLog .chat-line-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 0;
+      }
+
+      #chatLog .chat-line-head .chat-meta {
+        margin-bottom: 0;
+        flex: 1;
+        min-width: 0;
       }
 
       #chatLog .chat-meta {
@@ -609,18 +628,241 @@
         margin-bottom: 4px;
       }
 
+      #chatLog .chat-msg-menu-wrap {
+        position: relative;
+        flex-shrink: 0;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease;
+      }
+
+      #chatLog .chat-line:hover .chat-msg-menu-wrap,
+      #chatLog .chat-line:focus-within .chat-msg-menu-wrap,
+      #chatLog .chat-line:has(.chat-msg-dropdown:not([hidden])) .chat-msg-menu-wrap {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #chatLog .btn-msg-ellipsis {
+        width: 30px;
+        height: 28px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+        line-height: 1;
+        border-radius: 6px;
+        background: var(--surface-hover);
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        cursor: pointer;
+      }
+
+      #chatLog .btn-msg-ellipsis:hover:not(:disabled) {
+        color: var(--text);
+        border-color: var(--accent);
+      }
+
+      #chatLog .chat-msg-dropdown {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 4px);
+        min-width: 148px;
+        padding: 4px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        z-index: 80;
+      }
+
+      #chatLog .chat-msg-dropdown[hidden] {
+        display: none !important;
+      }
+
+      #chatLog .chat-msg-menu-item {
+        display: block;
+        width: 100%;
+        margin: 0;
+        padding: 8px 12px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        font-size: 0.8125rem;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      #chatLog .chat-msg-menu-item:hover:not(:disabled) {
+        background: var(--surface-hover);
+      }
+
+      #chatLog .chat-msg-menu-item-danger {
+        color: var(--danger);
+      }
+
       #chatLog .chat-image {
         max-width: min(100%, 440px);
         max-height: 380px;
         border-radius: 10px;
         display: block;
-        margin-top: 8px;
+        margin-top: 4px;
         object-fit: contain;
         background: var(--surface-hover);
       }
 
       #chatLog .chat-text {
+        margin-top: 2px;
+      }
+
+      #chatLog .chat-line-body {
+        margin-top: 0;
+      }
+
+      #chatLog .chat-reactions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        max-height: 0;
+        margin-top: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
+        transition: opacity 0.14s ease, max-height 0.2s ease, margin-top 0.2s ease;
+      }
+
+      #chatLog .chat-reactions.chat-reactions--has-pills,
+      #chatLog .chat-line:hover .chat-reactions,
+      #chatLog .chat-line:focus-within .chat-reactions {
+        max-height: 320px;
         margin-top: 6px;
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #chatLog .chat-reaction-add {
+        width: 30px;
+        height: 28px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.05rem;
+        line-height: 1;
+        border-radius: 999px;
+        border: 1px dashed var(--border);
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
+      #chatLog .chat-reaction-add:hover {
+        border-color: var(--accent-dim);
+        color: var(--text);
+        background: var(--surface-hover);
+      }
+
+      #chatLog .chat-reaction-picker-inline {
+        flex-basis: 100%;
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        padding-top: 2px;
+      }
+
+      #chatLog .chat-reaction-picker-btn {
+        width: 36px;
+        height: 32px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+        line-height: 1;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        cursor: pointer;
+      }
+
+      #chatLog .chat-reaction-picker-btn:hover {
+        border-color: var(--accent-dim);
+      }
+
+      #chatLog .chat-reaction-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text-muted);
+        font-size: 0.8125rem;
+        line-height: 1.4;
+        cursor: pointer;
+      }
+
+      #chatLog .chat-reaction-btn:hover {
+        border-color: var(--accent-dim);
+        color: var(--text);
+      }
+
+      #chatLog .chat-reaction-btn-active {
+        border-color: var(--accent);
+        background: rgba(99, 102, 241, 0.15);
+        color: var(--text);
+      }
+
+      #chatLog .chat-reaction-emoji {
+        font-size: 1rem;
+        line-height: 1;
+      }
+
+      #chatLog .chat-reaction-count {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--text-muted);
+      }
+
+      #chatLog .chat-reaction-btn-active .chat-reaction-count {
+        color: var(--text);
+      }
+
+      #chatLog .chat-edit-wrap {
+        margin-top: 6px;
+        max-width: min(100%, 440px);
+      }
+
+      #chatLog .chat-edit-field {
+        display: block;
+        width: 100%;
+        min-height: 64px;
+        margin-bottom: 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--input-bg);
+        color: var(--text);
+        font: inherit;
+        resize: vertical;
+      }
+
+      #chatLog .chat-edit-btns {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      #chatLog .chat-edit-btns button {
+        padding: 6px 12px;
+        font-size: 0.8125rem;
       }
 
       .chat-footer {
@@ -635,6 +877,21 @@
       .chat-footer input[type="text"] {
         flex: 1;
         min-width: 0;
+      }
+
+      /* Сенсор: без hover — меню и реакции всегда доступны */
+      @media (hover: none) and (pointer: coarse) {
+        #chatLog .chat-msg-menu-wrap {
+          opacity: 1;
+          pointer-events: auto;
+        }
+
+        #chatLog .chat-reactions {
+          max-height: 320px;
+          margin-top: 6px;
+          opacity: 1;
+          pointer-events: auto;
+        }
       }
 
       .nick-field {
@@ -716,13 +973,24 @@
             </div>
           </div>
         </header>
-        <div id="chatLog" aria-live="polite" tabindex="0" title="Кликните здесь и вставьте фото (Ctrl+V)"></div>
+        <div
+          id="chatLog"
+          aria-live="polite"
+          tabindex="0"
+          title="Ctrl+V или перетаскивание фото; свои сообщения — Изменить / Удалить"
+        ></div>
         <footer class="chat-footer">
           <input id="chatImageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
-          <button id="chatImageBtn" type="button" disabled title="Вставить фото">
+          <button id="chatImageBtn" type="button" disabled title="Выбрать фото; подпись — в поле справа (до отправки)">
             Фото
           </button>
-          <input id="chatInput" type="text" placeholder="Сообщение…" maxlength="500" disabled />
+          <input
+            id="chatInput"
+            type="text"
+            placeholder="Текст или подпись к фото…"
+            maxlength="500"
+            disabled
+          />
           <button id="chatSendBtn" type="button" disabled>Отправить</button>
         </footer>
       </main>
@@ -755,6 +1023,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=24"></script>
+    <script src="./app.js?v=35"></script>
   </body>
 </html>

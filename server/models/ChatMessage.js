@@ -6,6 +6,8 @@ const chatMessageSchema = new mongoose.Schema(
     text: { type: String, maxlength: 500, default: "" },
     imageMime: { type: String, maxlength: 40 },
     imageData: { type: String, maxlength: 3_500_000 },
+    /** { "👍": ["nick1", "nick2"], … } */
+    reactions: { type: Object, default: {} },
   },
   { timestamps: true }
 );

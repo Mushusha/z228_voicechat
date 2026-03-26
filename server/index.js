@@ -55,6 +55,7 @@ function appendMemoryChat(nickname, text, imageMime, imageData) {
     text: text || "",
     imageMime: imageMime || null,
     imageData: imageData || null,
+    reactions: {},
     createdAt: new Date(),
   };
   memoryChat.push(row);
@@ -62,6 +63,19 @@ function appendMemoryChat(nickname, text, imageMime, imageData) {
     memoryChat.shift();
   }
   return row;
+}
+
+function serializeReactionsForPayload(raw) {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (Array.isArray(v) && v.length) {
+      out[k] = [...v];
+    }
+  }
+  return out;
 }
 
 function memoryChatHistoryPayload() {
@@ -72,7 +86,37 @@ function memoryChatHistoryPayload() {
     createdAt: d.createdAt.toISOString(),
     imageMime: d.imageMime || undefined,
     imageData: d.imageData || undefined,
+    reactions: serializeReactionsForPayload(d.reactions),
   }));
+}
+
+function normalizeReactionEmoji(raw) {
+  const s = String(raw || "").trim();
+  if (!s || s.length > 16) {
+    return null;
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(s)) {
+    return null;
+  }
+  return s;
+}
+
+/** Объект reactions мутируется: переключить реакцию nickname на emoji. */
+function toggleReactionOnStore(reactions, emoji, nickname) {
+  const r = reactions;
+  if (!r[emoji]) {
+    r[emoji] = [];
+  }
+  const arr = r[emoji];
+  const i = arr.indexOf(nickname);
+  if (i >= 0) {
+    arr.splice(i, 1);
+    if (arr.length === 0) {
+      delete r[emoji];
+    }
+  } else {
+    arr.push(nickname);
+  }
 }
 
 const CHAT_IMAGE_MAX_B64 = 2_500_000;
@@ -101,6 +145,31 @@ function normalizeIncomingImage(raw) {
     return null;
   }
   return { mime, data };
+}
+
+/** Только 24-символьный hex — иначе in-memory id вроде "1" ошибочно проходил ObjectId.isValid и уходил в Mongo. */
+function isMongoObjectIdString(s) {
+  return typeof s === "string" && /^[a-fA-F0-9]{24}$/.test(s);
+}
+
+/** Нормализация type из клиента: пробелы, NFKC, невидимые символы, типографский дефис → ASCII. */
+function normalizeWsMessageType(raw) {
+  let s = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  try {
+    s = s.normalize("NFKC");
+  } catch (_) {
+    /* ignore */
+  }
+  return s
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, "")
+    .replace(/[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]/g, "-");
+}
+
+/** Живое подключение к Mongo — надёжнее флага mongoReady после обрыва сессии. */
+function mongooseLive() {
+  return mongoose.connection.readyState === 1;
 }
 
 function getLocalIPv4Addresses() {
@@ -192,7 +261,7 @@ function attachWebSocketServer(server) {
   wssList.push(wss);
 
   wss.on("connection", (ws) => {
-    send(ws, { type: "hello", adminPanel: true });
+    send(ws, { type: "hello", adminPanel: true, chatMessageOps: true });
 
     ws.on("message", (raw) => {
       let message;
@@ -208,7 +277,7 @@ function attachWebSocketServer(server) {
         return;
       }
 
-      const msgType = String(message.type ?? "").trim().toLowerCase();
+      const msgType = normalizeWsMessageType(message.type);
 
       const clientShouldNotSend = new Set([
         "hello",
@@ -223,6 +292,9 @@ function attachWebSocketServer(server) {
         "kicked",
         "admin-verify-ok",
         "admin-peers-result",
+        "chat-message-updated",
+        "chat-message-deleted",
+        "chat-message-reactions",
       ]);
       if (clientShouldNotSend.has(msgType)) {
         return;
@@ -268,7 +340,7 @@ function attachWebSocketServer(server) {
         void (async () => {
           try {
             let messages;
-            if (mongoReady && mongoose.connection.readyState === 1) {
+            if (mongooseLive()) {
               const docs = await ChatMessage.find().sort({ createdAt: -1 }).limit(100).lean();
               messages = docs.reverse().map((d) => ({
                 id: String(d._id),
@@ -277,6 +349,7 @@ function attachWebSocketServer(server) {
                 createdAt: d.createdAt.toISOString(),
                 imageMime: d.imageMime || undefined,
                 imageData: d.imageData || undefined,
+                reactions: serializeReactionsForPayload(d.reactions),
               }));
             } else {
               messages = memoryChatHistoryPayload();
@@ -319,7 +392,7 @@ function attachWebSocketServer(server) {
             let outMime = normalizedImg ? normalizedImg.mime : null;
             let outData = normalizedImg ? normalizedImg.data : null;
             let createdAt;
-            if (mongoReady && mongoose.connection.readyState === 1) {
+            if (mongooseLive()) {
               const doc = await ChatMessage.create({
                 nickname: sender.nickname,
                 text: outText,
@@ -345,6 +418,7 @@ function attachWebSocketServer(server) {
               nickname: sender.nickname,
               text: outText,
               createdAt,
+              reactions: {},
             };
             if (outMime && outData) {
               payload.imageMime = outMime;
@@ -354,6 +428,174 @@ function attachWebSocketServer(server) {
           } catch (error) {
             console.error("chat save:", error);
             send(ws, { type: "error", message: "Failed to save message." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-edit") {
+        const id = String(message.id || "").trim();
+        const newText = String(message.text ?? "").trim().slice(0, 500);
+        if (!id) {
+          send(ws, { type: "error", message: "Нет id сообщения." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive() && isMongoObjectIdString(id)) {
+              const doc = await ChatMessage.findOne({ _id: id, nickname: sender.nickname });
+              if (!doc) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              if (!newText && !doc.imageMime) {
+                send(ws, { type: "error", message: "Нельзя оставить сообщение без текста и без фото." });
+                return;
+              }
+              doc.text = newText;
+              await doc.save();
+              const idOut = String(doc._id);
+              const payload = {
+                type: "chat-message-updated",
+                id: idOut,
+                nickname: doc.nickname,
+                text: doc.text || "",
+                createdAt: doc.createdAt.toISOString(),
+              };
+              if (doc.imageMime && doc.imageData) {
+                payload.imageMime = doc.imageMime;
+                payload.imageData = doc.imageData;
+              }
+              payload.reactions = serializeReactionsForPayload(doc.reactions);
+              broadcast(payload);
+            } else if (isMongoObjectIdString(id)) {
+              send(ws, {
+                type: "error",
+                message: "База данных недоступна. Перезапустите сервер (или docker compose up).",
+              });
+              return;
+            } else {
+              const row = memoryChat.find((r) => r.id === id && r.nickname === sender.nickname);
+              if (!row) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              if (!newText && !row.imageMime) {
+                send(ws, { type: "error", message: "Нельзя оставить сообщение без текста и без фото." });
+                return;
+              }
+              row.text = newText;
+              const payload = {
+                type: "chat-message-updated",
+                id,
+                nickname: row.nickname,
+                text: row.text || "",
+                createdAt: row.createdAt.toISOString(),
+              };
+              if (row.imageMime && row.imageData) {
+                payload.imageMime = row.imageMime;
+                payload.imageData = row.imageData;
+              }
+              payload.reactions = serializeReactionsForPayload(row.reactions);
+              broadcast(payload);
+            }
+          } catch (error) {
+            console.error("chat-edit:", error);
+            send(ws, { type: "error", message: "Не удалось изменить сообщение." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-react") {
+        const id = String(message.id || "").trim();
+        const emoji = normalizeReactionEmoji(message.emoji);
+        if (!id || !emoji) {
+          send(ws, { type: "error", message: "Нужны id сообщения и реакция." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive() && isMongoObjectIdString(id)) {
+              const doc = await ChatMessage.findById(id);
+              if (!doc) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              const base = doc.reactions && typeof doc.reactions === "object" ? doc.reactions : {};
+              const r0 = JSON.parse(JSON.stringify(base));
+              toggleReactionOnStore(r0, emoji, sender.nickname);
+              doc.reactions = r0;
+              doc.markModified("reactions");
+              await doc.save();
+              broadcast({
+                type: "chat-message-reactions",
+                id: String(doc._id),
+                reactions: serializeReactionsForPayload(r0),
+              });
+            } else if (isMongoObjectIdString(id)) {
+              send(ws, {
+                type: "error",
+                message: "База данных недоступна. Перезапустите сервер (или docker compose up).",
+              });
+              return;
+            } else {
+              const row = memoryChat.find((r) => r.id === id);
+              if (!row) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              if (!row.reactions || typeof row.reactions !== "object") {
+                row.reactions = {};
+              }
+              toggleReactionOnStore(row.reactions, emoji, sender.nickname);
+              broadcast({
+                type: "chat-message-reactions",
+                id,
+                reactions: serializeReactionsForPayload(row.reactions),
+              });
+            }
+          } catch (error) {
+            console.error("chat-react:", error);
+            send(ws, { type: "error", message: "Не удалось поставить реакцию." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-delete") {
+        const id = String(message.id || "").trim();
+        if (!id) {
+          send(ws, { type: "error", message: "Нет id сообщения." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive() && isMongoObjectIdString(id)) {
+              const res = await ChatMessage.deleteOne({ _id: id, nickname: sender.nickname });
+              if (res.deletedCount === 0) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              broadcast({ type: "chat-message-deleted", id: String(id) });
+            } else if (isMongoObjectIdString(id)) {
+              send(ws, {
+                type: "error",
+                message: "База данных недоступна. Перезапустите сервер (или docker compose up).",
+              });
+              return;
+            } else {
+              const idx = memoryChat.findIndex((r) => r.id === id && r.nickname === sender.nickname);
+              if (idx === -1) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              memoryChat.splice(idx, 1);
+              broadcast({ type: "chat-message-deleted", id });
+            }
+          } catch (error) {
+            console.error("chat-delete:", error);
+            send(ws, { type: "error", message: "Не удалось удалить сообщение." });
           }
         })();
         return;
@@ -474,7 +716,9 @@ async function start() {
   httpServer.listen(listenOptions(PORT), () => {
     const hostHint = process.env.LISTEN_HOST || ":: (all interfaces, IPv4+IPv6)";
     console.log(`HTTP: http://127.0.0.1:${PORT} — listening ${hostHint}`);
-    console.log("WebSocket: join / chat / signal / admin-verify / admin-peers / admin-kick");
+    console.log(
+      "WebSocket: join, chat, chat-edit, chat-delete, chat-react, signal, admin-verify, admin-peers, admin-kick"
+    );
   });
 
   if (HTTPS_PORT > 0) {

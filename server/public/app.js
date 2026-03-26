@@ -6,6 +6,29 @@ const LS_THEME = "zalupa_theme";
 const LS_PEER_AUDIO = "zalupa228_peer_audio";
 const LS_MIC_ENABLED = "zalupa228_mic_on";
 
+/** Быстрые реакции (пикер «＋»); остальные эмодзи появляются, если уже есть на сервере. */
+const QUICK_REACTION_EMOJIS = [
+  "👍",
+  "❤️",
+  "😂",
+  "🤣",
+  "😮",
+  "😢",
+  "😍",
+  "🔥",
+  "🎉",
+  "👏",
+  "🙏",
+  "🙌",
+  "💯",
+  "👀",
+  "🤔",
+  "💀",
+  "🤝",
+  "⭐",
+  "✨",
+];
+
 function clearRejoinHint() {
   sessionStorage.removeItem(SS_JOINED);
   sessionStorage.removeItem(SS_NICK);
@@ -111,6 +134,7 @@ const adminLogoutBtn = document.getElementById("adminLogoutBtn");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
 const chatLog = document.getElementById("chatLog");
+const chatMainEl = document.querySelector(".chat-main");
 const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
 const chatImageInput = document.getElementById("chatImageInput");
@@ -176,6 +200,8 @@ let socket = null;
 let localStream = null;
 let micEnabled = true;
 let joinedRoom = false;
+/** null до первого hello; false — сервер без chat-edit/chat-delete (старый процесс/образ). */
+let serverChatMessageOps = null;
 let rtcChain = Promise.resolve();
 /** Если не null, socket.onclose не затирает статус сообщением «Отключено» (исключение из комнаты). */
 let pendingKickedDisconnectStatus = null;
@@ -341,16 +367,189 @@ async function prepareImageForChat(file) {
   }
 }
 
-function appendChatMessage({ nickname, text, createdAt, imageMime, imageData }) {
-  if (!chatLog) {
+function chatLineElById(id) {
+  if (!chatLog || id == null || id === "") {
+    return null;
+  }
+  const s = String(id);
+  const sel =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? `[data-message-id="${CSS.escape(s)}"]`
+      : `[data-message-id="${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+  return chatLog.querySelector(sel);
+}
+
+function closeAllChatMessageMenus() {
+  document.querySelectorAll(".chat-msg-dropdown").forEach((el) => {
+    el.hidden = true;
+  });
+  document.querySelectorAll(".btn-msg-ellipsis").forEach((btn) => {
+    btn.setAttribute("aria-expanded", "false");
+  });
+}
+
+function closeAllReactionPickers() {
+  document.querySelectorAll(".chat-reaction-picker-inline").forEach((el) => el.remove());
+}
+
+function sendChatReaction(messageId, emoji) {
+  if (!joinedRoom || !socket || socket.readyState !== WebSocket.OPEN || !messageId) {
     return;
   }
+  try {
+    socket.send(JSON.stringify({ type: "chat-react", id: String(messageId), emoji }));
+  } catch (e) {
+    console.error(e);
+    setStatus("Не удалось отправить реакцию.");
+  }
+}
+
+function renderReactionsStrip(line, messageId, reactions) {
+  if (messageId == null || messageId === "") {
+    return;
+  }
+  let bar = line.querySelector(".chat-reactions");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "chat-reactions";
+    line.appendChild(bar);
+  }
+  bar.replaceChildren();
+  const counts = reactions && typeof reactions === "object" ? reactions : {};
+  const seen = new Set(QUICK_REACTION_EMOJIS);
+  const activeQuick = QUICK_REACTION_EMOJIS.filter((e) => Array.isArray(counts[e]) && counts[e].length);
+  const extras = Object.keys(counts).filter(
+    (e) => !seen.has(e) && Array.isArray(counts[e]) && counts[e].length
+  );
+  const activeList = [...activeQuick, ...extras.sort()];
+  bar.classList.toggle("chat-reactions--has-pills", activeList.length > 0);
+
+  function makeReactionPill(emo) {
+    const nicks = Array.isArray(counts[emo]) ? counts[emo] : [];
+    if (!emo || !nicks.length) {
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-reaction-btn";
+    if (myNickname && nicks.includes(myNickname)) {
+      btn.classList.add("chat-reaction-btn-active");
+    }
+    const spanE = document.createElement("span");
+    spanE.className = "chat-reaction-emoji";
+    spanE.textContent = emo;
+    btn.appendChild(spanE);
+    const c = document.createElement("span");
+    c.className = "chat-reaction-count";
+    c.textContent = String(nicks.length);
+    btn.appendChild(c);
+    btn.title = nicks.join(", ");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sendChatReaction(String(messageId), emo);
+    });
+    bar.appendChild(btn);
+  }
+
+  for (const emo of activeList) {
+    makeReactionPill(emo);
+  }
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "chat-reaction-add";
+  addBtn.textContent = "＋";
+  addBtn.setAttribute("aria-label", "Добавить реакцию");
+  addBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wasOpen = bar.querySelector(".chat-reaction-picker-inline") != null;
+    closeAllReactionPickers();
+    if (wasOpen) {
+      return;
+    }
+    const pickerRow = document.createElement("div");
+    pickerRow.className = "chat-reaction-picker-inline";
+    for (const emo of QUICK_REACTION_EMOJIS) {
+      const pe = document.createElement("button");
+      pe.type = "button";
+      pe.className = "chat-reaction-picker-btn";
+      pe.textContent = emo;
+      pe.setAttribute("aria-label", `Реакция ${emo}`);
+      pe.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        closeAllReactionPickers();
+        sendChatReaction(String(messageId), emo);
+      });
+      pickerRow.appendChild(pe);
+    }
+    bar.appendChild(pickerRow);
+  });
+  bar.appendChild(addBtn);
+}
+
+function buildChatMessageLine({ id, nickname, text, createdAt, imageMime, imageData, reactions }) {
   const line = document.createElement("div");
   line.className = "chat-line";
+  if (id != null && id !== "") {
+    line.dataset.messageId = String(id);
+  }
+  const head = document.createElement("div");
+  head.className = "chat-line-head";
   const meta = document.createElement("div");
   meta.className = "chat-meta";
   meta.textContent = `${nickname} · ${formatChatTime(createdAt)}`;
+  head.appendChild(meta);
+  if (id != null && id !== "" && myNickname && nickname === myNickname) {
+    const menuWrap = document.createElement("div");
+    menuWrap.className = "chat-msg-menu-wrap";
+    const menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "btn-msg-ellipsis";
+    menuBtn.textContent = "⋮";
+    menuBtn.setAttribute("aria-label", "Действия с сообщением");
+    menuBtn.setAttribute("aria-expanded", "false");
+    menuBtn.setAttribute("aria-haspopup", "true");
+    const dd = document.createElement("div");
+    dd.className = "chat-msg-dropdown";
+    dd.setAttribute("role", "menu");
+    dd.hidden = true;
+    const editItem = document.createElement("button");
+    editItem.type = "button";
+    editItem.className = "chat-msg-menu-item";
+    editItem.setAttribute("role", "menuitem");
+    editItem.textContent = "Изменить";
+    editItem.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeAllChatMessageMenus();
+      beginInlineEditChatLine(line, String(id));
+    });
+    const delItem = document.createElement("button");
+    delItem.type = "button";
+    delItem.className = "chat-msg-menu-item chat-msg-menu-item-danger";
+    delItem.setAttribute("role", "menuitem");
+    delItem.textContent = "Удалить";
+    delItem.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeAllChatMessageMenus();
+      requestDeleteChatMessage(String(id));
+    });
+    dd.appendChild(editItem);
+    dd.appendChild(delItem);
+    menuBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const opening = dd.hidden;
+      closeAllChatMessageMenus();
+      if (opening) {
+        dd.hidden = false;
+        menuBtn.setAttribute("aria-expanded", "true");
+      }
+    });
+    menuWrap.appendChild(menuBtn);
+    menuWrap.appendChild(dd);
+    head.appendChild(menuWrap);
+  }
   const body = document.createElement("div");
+  body.className = "chat-line-body";
   if (imageData && imageMime) {
     const img = document.createElement("img");
     img.className = "chat-image";
@@ -366,10 +565,157 @@ function appendChatMessage({ nickname, text, createdAt, imageMime, imageData }) 
     textEl.textContent = caption;
     body.appendChild(textEl);
   }
-  line.appendChild(meta);
+  line.appendChild(head);
   line.appendChild(body);
-  chatLog.appendChild(line);
+  renderReactionsStrip(line, id != null && id !== "" ? String(id) : "", reactions);
+  return line;
+}
+
+function appendChatMessage(payload) {
+  if (!chatLog) {
+    return;
+  }
+  chatLog.appendChild(buildChatMessageLine(payload));
   chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function beginInlineEditChatLine(line, id) {
+  closeAllChatMessageMenus();
+  if (!line || line.querySelector(".chat-edit-wrap")) {
+    return;
+  }
+  const body = line.querySelector(".chat-line-body");
+  if (!body) {
+    return;
+  }
+  const hasImg = body.querySelector(".chat-image") !== null;
+  const textEl = body.querySelector(".chat-text");
+  const current = textEl ? textEl.textContent : "";
+  const hidden = [];
+  for (const ch of Array.from(body.children)) {
+    if (ch.classList.contains("chat-edit-wrap")) {
+      continue;
+    }
+    hidden.push(ch);
+    ch.style.display = "none";
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "chat-edit-wrap";
+  const ta = document.createElement("textarea");
+  ta.className = "chat-edit-field";
+  ta.maxLength = 500;
+  ta.value = current;
+  ta.rows = 3;
+  const btns = document.createElement("div");
+  btns.className = "chat-edit-btns";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn-primary";
+  save.textContent = "Сохранить";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Отмена";
+  function restoreBody() {
+    wrap.remove();
+    for (const ch of hidden) {
+      ch.style.display = "";
+    }
+  }
+  cancel.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    restoreBody();
+  });
+  save.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const trimmed = ta.value.trim().slice(0, 500);
+    if (!trimmed && !hasImg) {
+      setStatus("Для сообщения без фото нужен текст.");
+      return;
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+      setStatus("Нет соединения.");
+      return;
+    }
+    try {
+      socket.send(JSON.stringify({ type: "chat-edit", id: String(id), text: trimmed }));
+    } catch (e) {
+      console.error(e);
+      setStatus("Не удалось отправить изменение.");
+      return;
+    }
+    restoreBody();
+  });
+  btns.appendChild(save);
+  btns.appendChild(cancel);
+  wrap.appendChild(ta);
+  wrap.appendChild(btns);
+  body.appendChild(wrap);
+  ta.focus();
+}
+
+function requestDeleteChatMessage(id) {
+  if (!id) {
+    return;
+  }
+  if (!socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    setStatus("Нет соединения.");
+    return;
+  }
+  try {
+    socket.send(JSON.stringify({ type: "chat-delete", id }));
+  } catch (e) {
+    console.error(e);
+    setStatus("Не удалось удалить сообщение.");
+  }
+}
+
+function applyChatMessageUpdated(msg) {
+  const id =
+    msg.id != null ? String(msg.id) : msg._id != null ? String(msg._id) : "";
+  if (!id || !chatLog) {
+    return;
+  }
+  const old = chatLineElById(id);
+  if (!old) {
+    console.warn("chat-message-updated: нет строки в DOM для id", id);
+    setStatus("Не удалось обновить сообщение в интерфейсе — обновите страницу.");
+    return;
+  }
+  const react =
+    msg.reactions != null && typeof msg.reactions === "object" ? msg.reactions : {};
+  const fresh = buildChatMessageLine({
+    id,
+    nickname: msg.nickname,
+    text: msg.text,
+    createdAt: msg.createdAt,
+    imageMime: msg.imageMime,
+    imageData: msg.imageData,
+    reactions: react,
+  });
+  old.replaceWith(fresh);
+}
+
+function applyChatMessageReactions(msg) {
+  const id = msg.id != null ? String(msg.id) : "";
+  if (!id || !chatLog) {
+    return;
+  }
+  const line = chatLineElById(id);
+  if (!line) {
+    return;
+  }
+  const react = msg.reactions != null && typeof msg.reactions === "object" ? msg.reactions : {};
+  renderReactionsStrip(line, id, react);
+}
+
+function applyChatMessageDeleted(id) {
+  if (id == null) {
+    return;
+  }
+  const line = chatLineElById(id);
+  if (line) {
+    line.remove();
+  }
 }
 
 function renderChatHistory(messages) {
@@ -379,11 +725,13 @@ function renderChatHistory(messages) {
   chatLog.innerHTML = "";
   for (const m of messages) {
     appendChatMessage({
+      id: m.id,
       nickname: m.nickname,
       text: m.text,
       createdAt: m.createdAt,
       imageMime: m.imageMime,
       imageData: m.imageData,
+      reactions: m.reactions != null && typeof m.reactions === "object" ? m.reactions : {},
     });
   }
 }
@@ -417,7 +765,7 @@ function clipboardLooksLikeImage(cd) {
   if (cd.types) {
     for (let i = 0; i < cd.types.length; i++) {
       const t = String(cd.types[i]).toLowerCase();
-      if (t.startsWith("image/")) {
+      if (t.startsWith("image/") || t === "files") {
         return true;
       }
     }
@@ -448,33 +796,40 @@ function imageFileFromClipboardData(cd) {
   if (!cd) {
     return null;
   }
+  if (cd.items && cd.items.length) {
+    for (let i = 0; i < cd.items.length; i++) {
+      const item = cd.items[i];
+      if (item.kind !== "file") {
+        continue;
+      }
+      let file = null;
+      try {
+        file = item.getAsFile();
+      } catch (_) {
+        continue;
+      }
+      if (!file || file.size === 0) {
+        continue;
+      }
+      const ty = String(file.type || item.type || "").toLowerCase();
+      if (ty.startsWith("image/") || ty === "" || ty === "application/octet-stream") {
+        return file;
+      }
+    }
+  }
   if (cd.files && cd.files.length) {
     for (let i = 0; i < cd.files.length; i++) {
       const f = cd.files[i];
-      const t = String(f.type || "");
+      const t = String(f.type || "").toLowerCase();
       if (t.startsWith("image/")) {
         return f;
       }
     }
     const f0 = cd.files[0];
     if (f0) {
-      const t0 = String(f0.type || "");
+      const t0 = String(f0.type || "").toLowerCase();
       if (!t0 || t0 === "application/octet-stream") {
         return f0;
-      }
-    }
-  }
-  if (cd.items) {
-    for (const item of cd.items) {
-      if (item.kind !== "file") {
-        continue;
-      }
-      const ty = String(item.type || "");
-      if (ty.startsWith("image/") || ty === "") {
-        const file = item.getAsFile();
-        if (file && file.size > 0) {
-          return file;
-        }
       }
     }
   }
@@ -1077,7 +1432,16 @@ function connectSocket() {
     }
 
     switch (message.type) {
+      case "hello":
+        serverChatMessageOps = message.chatMessageOps === true;
+        if (joinedRoom && serverChatMessageOps === false) {
+          setStatus(
+            `${myNickname ? `В сети как ${myNickname}. ` : ""}На сервере нет правок чата — обновите backend (см. docker-compose: том ./server или rebuild).`
+          );
+        }
+        break;
       case "join-accepted":
+        myNickname = message.nickname;
         joinBtn.disabled = true;
         nicknameInput.disabled = true;
         nicknameInput.value = message.nickname;
@@ -1086,11 +1450,17 @@ function connectSocket() {
         }
         enqueueRtc(async () => {
           joinedRoom = true;
-          myNickname = message.nickname;
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
-          setStatus(`В сети как ${message.nickname}`);
+          {
+            let line = `В сети как ${message.nickname}`;
+            if (serverChatMessageOps === false) {
+              line +=
+                ". Сервер устарел: нет изменения/удаления сообщений — перезапустите с актуальным server/.";
+            }
+            setStatus(line);
+          }
           if (micBtn) {
             micBtn.disabled = false;
           }
@@ -1107,12 +1477,26 @@ function connectSocket() {
         break;
       case "chat-message":
         appendChatMessage({
+          id: message.id,
           nickname: message.nickname,
           text: message.text,
           createdAt: message.createdAt,
           imageMime: message.imageMime,
           imageData: message.imageData,
+          reactions:
+            message.reactions != null && typeof message.reactions === "object"
+              ? message.reactions
+              : {},
         });
+        break;
+      case "chat-message-updated":
+        applyChatMessageUpdated(message);
+        break;
+      case "chat-message-reactions":
+        applyChatMessageReactions(message);
+        break;
+      case "chat-message-deleted":
+        applyChatMessageDeleted(message.id);
         break;
       case "join-rejected":
         joinedRoom = false;
@@ -1187,7 +1571,14 @@ function connectSocket() {
           }
           break;
         }
-        setStatus(`Ошибка: ${message.message}`);
+        {
+          let errText2 = message.message || "Ошибка.";
+          if (/unknown message type:\s*chat-(?:edit|delete)/i.test(errText2)) {
+            errText2 =
+              "Сервер без правок чата (старый процесс). Перезапустите: npm start из папки local-voicechat или docker compose down && docker compose up (в compose смонтирован ./server).";
+          }
+          setStatus(`Ошибка: ${errText2}`);
+        }
         break;
       default:
         break;
@@ -1279,6 +1670,8 @@ if (chatMenuBtn && chatDropdown) {
 
 document.addEventListener("click", () => {
   closeChatMenu();
+  closeAllChatMessageMenus();
+  closeAllReactionPickers();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -1286,6 +1679,8 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   closeChatMenu();
+  closeAllChatMessageMenus();
+  closeAllReactionPickers();
   closeAdminModal();
 });
 
@@ -1465,6 +1860,7 @@ async function onDocumentPasteForChat(event) {
   /** До любого await — иначе браузер успеет вставить текст по умолчанию и сорвёт отправку. */
   event.preventDefault();
   event.stopPropagation();
+  event.stopImmediatePropagation();
 
   let file = fileSync;
   if (!file) {
@@ -1478,7 +1874,130 @@ async function onDocumentPasteForChat(event) {
   await sendChatImage(file, cap);
 }
 
-document.addEventListener("paste", onDocumentPasteForChat, true);
+window.addEventListener("paste", onDocumentPasteForChat, true);
+
+const CHAT_IMAGE_NAME_EXT = /\.(jpe?g|png|gif|webp|bmp|svg|ico|heic|heif)$/i;
+
+function fileLooksLikeChatImage(file) {
+  if (!file || file.size === 0) {
+    return false;
+  }
+  const t = String(file.type || "").toLowerCase();
+  if (t.startsWith("image/") || t === "" || t === "application/octet-stream") {
+    return true;
+  }
+  return CHAT_IMAGE_NAME_EXT.test(String(file.name || ""));
+}
+
+function dataTransferHasImageFile(dt) {
+  if (!dt || !dt.types || dt.types.length === 0) {
+    return false;
+  }
+  const lower = Array.from(dt.types).map((x) => String(x).toLowerCase());
+  if (lower.includes("files")) {
+    return true;
+  }
+  if (lower.some((t) => t.startsWith("image/"))) {
+    return true;
+  }
+  if (lower.includes("application/x-moz-file")) {
+    return true;
+  }
+  if (dt.items && dt.items.length) {
+    for (let i = 0; i < dt.items.length; i++) {
+      const it = dt.items[i];
+      if (it.kind !== "file") {
+        continue;
+      }
+      const ty = String(it.type || "").toLowerCase();
+      if (ty.startsWith("image/") || ty === "" || ty === "application/octet-stream") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function pickImageFileFromDataTransfer(dt) {
+  if (!dt) {
+    return null;
+  }
+  if (dt.files && dt.files.length) {
+    for (let i = 0; i < dt.files.length; i++) {
+      const f = dt.files[i];
+      if (fileLooksLikeChatImage(f)) {
+        return f;
+      }
+    }
+  }
+  if (dt.items && dt.items.length) {
+    for (let i = 0; i < dt.items.length; i++) {
+      const item = dt.items[i];
+      if (item.kind !== "file") {
+        continue;
+      }
+      let file = null;
+      try {
+        file = item.getAsFile();
+      } catch (_) {
+        continue;
+      }
+      if (fileLooksLikeChatImage(file)) {
+        return file;
+      }
+    }
+  }
+  return null;
+}
+
+function onChatMainDragOver(e) {
+  if (!joinedRoom || !dataTransferHasImageFile(e.dataTransfer)) {
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = "copy";
+  if (chatMainEl) {
+    chatMainEl.classList.add("chat-main-drag");
+  }
+}
+
+function onChatMainDragLeave(e) {
+  if (!chatMainEl) {
+    return;
+  }
+  const rel = e.relatedTarget;
+  if (!rel || !chatMainEl.contains(rel)) {
+    chatMainEl.classList.remove("chat-main-drag");
+  }
+}
+
+async function onChatMainDrop(e) {
+  if (chatMainEl) {
+    chatMainEl.classList.remove("chat-main-drag");
+  }
+  if (!joinedRoom) {
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  const file = pickImageFileFromDataTransfer(e.dataTransfer);
+  if (!file) {
+    setStatus("Перетащите файл-картинки (JPEG, PNG, GIF, WebP и др.).");
+    return;
+  }
+  const cap = chatInput && !chatInput.disabled ? chatInput.value.trim().slice(0, 500) : "";
+  await sendChatImage(file, cap);
+}
+
+if (chatMainEl) {
+  chatMainEl.addEventListener("dragover", onChatMainDragOver, true);
+  chatMainEl.addEventListener("dragleave", onChatMainDragLeave, true);
+  chatMainEl.addEventListener("drop", onChatMainDrop, true);
+  window.addEventListener("dragend", () => {
+    chatMainEl.classList.remove("chat-main-drag");
+  });
+}
 
 if (chatImageBtn && chatImageInput) {
   chatImageBtn.addEventListener("click", () => {
