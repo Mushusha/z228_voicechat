@@ -86,6 +86,9 @@ function forceDisconnectClient() {
   if (micBtn) {
     micBtn.disabled = true;
   }
+  if (micToggleBottom) {
+    micToggleBottom.disabled = true;
+  }
   setChatEnabled(false);
   if (leaveBtn) {
     leaveBtn.disabled = true;
@@ -121,6 +124,8 @@ const chatMenuBtn = document.getElementById("chatMenuBtn");
 const chatDropdown = document.getElementById("chatDropdown");
 const menuThemeBtn = document.getElementById("menuThemeBtn");
 const menuAdminBtn = document.getElementById("menuAdminBtn");
+const menuProfileBtn = document.getElementById("menuProfileBtn");
+const menuDonateBtn = document.getElementById("menuDonateBtn");
 const adminModal = document.getElementById("adminModal");
 const adminModalClose = document.getElementById("adminModalClose");
 const adminParticipantsList = document.getElementById("adminParticipantsList");
@@ -131,6 +136,10 @@ const adminAuthSubmit = document.getElementById("adminAuthSubmit");
 const adminAuthError = document.getElementById("adminAuthError");
 const adminJoinHint = document.getElementById("adminJoinHint");
 const adminLogoutBtn = document.getElementById("adminLogoutBtn");
+const adminCreateTextChannelBtn = document.getElementById("adminCreateTextChannelBtn");
+const adminCreateVoiceChannelBtn = document.getElementById("adminCreateVoiceChannelBtn");
+const adminRenameChannelBtn = document.getElementById("adminRenameChannelBtn");
+const adminDeleteChannelBtn = document.getElementById("adminDeleteChannelBtn");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
 const chatLog = document.getElementById("chatLog");
@@ -139,6 +148,25 @@ const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
 const chatImageInput = document.getElementById("chatImageInput");
 const chatImageBtn = document.getElementById("chatImageBtn");
+const profileModal = document.getElementById("profileModal");
+const profileNameInput = document.getElementById("profileNameInput");
+const profileSaveBtn = document.getElementById("profileSaveBtn");
+const profileCloseBtn = document.getElementById("profileCloseBtn");
+const channelsModal = document.getElementById("channelsModal");
+const textChannelSelect = document.getElementById("textChannelSelect");
+const voiceChannelSelect = document.getElementById("voiceChannelSelect");
+const channelsCloseBtn = document.getElementById("channelsCloseBtn");
+const donateModal = document.getElementById("donateModal");
+const donateCloseBtn = document.getElementById("donateCloseBtn");
+const micToggleBottom = document.getElementById("micToggleBottom");
+const allSoundToggleBtn = document.getElementById("allSoundToggleBtn");
+const allSoundVolume = document.getElementById("allSoundVolume");
+const allSoundVolumeVal = document.getElementById("allSoundVolumeVal");
+const textChannelsList = document.getElementById("textChannelsList");
+const voiceChannelsList = document.getElementById("voiceChannelsList");
+const micDockBtn = document.getElementById("micDockBtn");
+const soundDockBtn = document.getElementById("soundDockBtn");
+const miniPopup = document.getElementById("miniPopup");
 
 const peers = new Map();
 
@@ -210,6 +238,13 @@ let cachedAdminSecret = null;
 let adminServerPeers = [];
 let pendingAdminSecretAttempt = null;
 let awaitingAdminVerifyResponse = false;
+let textChannels = [];
+let voiceChannels = [];
+let currentTextChannel = "text-general";
+let currentVoiceChannel = "voice-general";
+let allSoundEnabled = true;
+let allSoundPercent = 100;
+let voiceMembersByChannel = {};
 
 function enqueueRtc(fn) {
   rtcChain = rtcChain.then(fn).catch((e) => console.error("WebRTC queue:", e));
@@ -282,6 +317,100 @@ function persistPeerAudioSettings() {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function openSimpleModal(modalEl) {
+  if (modalEl) {
+    modalEl.hidden = false;
+  }
+}
+
+function closeSimpleModal(modalEl) {
+  if (modalEl) {
+    modalEl.hidden = true;
+  }
+}
+
+function renderChannelSelect(selectEl, channels, currentId) {
+  if (!selectEl) {
+    return;
+  }
+  selectEl.innerHTML = "";
+  for (const ch of channels) {
+    const opt = document.createElement("option");
+    opt.value = ch.id;
+    opt.textContent = ch.name;
+    if (ch.id === currentId) {
+      opt.selected = true;
+    }
+    selectEl.appendChild(opt);
+  }
+}
+
+function applyChannelsState(message) {
+  if (Array.isArray(message.textChannels)) {
+    textChannels = message.textChannels;
+  }
+  if (Array.isArray(message.voiceChannels)) {
+    voiceChannels = message.voiceChannels;
+  }
+  if (typeof message.currentText === "string" && message.currentText) {
+    currentTextChannel = message.currentText;
+  }
+  if (typeof message.currentVoice === "string" && message.currentVoice) {
+    currentVoiceChannel = message.currentVoice;
+  }
+  if (message.voiceMembers && typeof message.voiceMembers === "object") {
+    voiceMembersByChannel = message.voiceMembers;
+  }
+  renderChannelSelect(textChannelSelect, textChannels, currentTextChannel);
+  renderChannelSelect(voiceChannelSelect, voiceChannels, currentVoiceChannel);
+  renderChannelPanels();
+}
+
+function renderChannelPanels() {
+  if (textChannelsList) {
+    textChannelsList.innerHTML = "";
+    for (const ch of textChannels) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "channel-btn" + (ch.id === currentTextChannel ? " active" : "");
+      btn.textContent = `# ${ch.name}`;
+      btn.addEventListener("click", () => {
+        currentTextChannel = ch.id;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "set-text-channel", channelId: ch.id }));
+          if (chatLog) chatLog.innerHTML = "";
+        }
+      });
+      li.appendChild(btn);
+      textChannelsList.appendChild(li);
+    }
+  }
+  if (voiceChannelsList) {
+    voiceChannelsList.innerHTML = "";
+    for (const ch of voiceChannels) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "channel-btn" + (ch.id === currentVoiceChannel ? " active" : "");
+      btn.textContent = `🔊 ${ch.name}`;
+      btn.addEventListener("click", () => {
+        currentVoiceChannel = ch.id;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "set-voice-channel", channelId: ch.id }));
+        }
+      });
+      li.appendChild(btn);
+      const members = Array.isArray(voiceMembersByChannel[ch.id]) ? voiceMembersByChannel[ch.id] : [];
+      const info = document.createElement("div");
+      info.className = "voice-members-preview";
+      info.textContent = members.length ? members.join(", ") : "пусто";
+      li.appendChild(info);
+      voiceChannelsList.appendChild(li);
+    }
+  }
 }
 
 function setChatEnabled(enabled) {
@@ -946,6 +1075,9 @@ function setMicButtonState() {
     micBtn.setAttribute("aria-label", micEnabled ? labelOn : labelOff);
     micBtn.setAttribute("title", micEnabled ? titleOn : titleOff);
   }
+  if (micToggleBottom) {
+    micToggleBottom.textContent = micEnabled ? "Микро: вкл" : "Микро: выкл";
+  }
 }
 
 function setMicEnabled(enabled) {
@@ -959,6 +1091,110 @@ function setMicEnabled(enabled) {
     }
   }
   setMicButtonState();
+}
+
+function closeMiniPopup() {
+  if (miniPopup) {
+    miniPopup.hidden = true;
+    miniPopup.innerHTML = "";
+  }
+}
+
+async function getAudioDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return {
+      input: devices.filter((d) => d.kind === "audioinput"),
+      output: devices.filter((d) => d.kind === "audiooutput"),
+    };
+  } catch (_) {
+    return { input: [], output: [] };
+  }
+}
+
+async function replaceInputDevice(deviceId) {
+  if (!deviceId) return;
+  const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+  const track = s.getAudioTracks()[0];
+  if (!track) return;
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+  }
+  localStream = s;
+  for (const pc of peers.values()) {
+    const sender = pc.getSenders().find((x) => x.track && x.track.kind === "audio");
+    if (sender) {
+      await sender.replaceTrack(track);
+    }
+  }
+  setMicEnabled(micEnabled);
+}
+
+function applyOutputDeviceToAudios(deviceId) {
+  for (const a of remoteAudioByPeer.values()) {
+    if (typeof a.setSinkId === "function") {
+      a.setSinkId(deviceId).catch(() => {});
+    }
+  }
+}
+
+async function openAudioPopup(anchorEl, peerNickname = "") {
+  if (!miniPopup || !anchorEl) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const devices = await getAudioDevices();
+  const current = peerNickname ? getPeerVolumePercent(peerNickname) : allSoundPercent;
+  miniPopup.innerHTML = `
+    <div><strong>${peerNickname ? peerNickname : "Аудио"}</strong></div>
+    <label>Input volume</label>
+    <input id="miniInVol" type="range" min="0" max="200" value="${micEnabled ? 100 : 0}" />
+    <label>Output volume</label>
+    <input id="miniOutVol" type="range" min="0" max="200" value="${current}" />
+    <label>Input device</label>
+    <select id="miniInDev">${devices.input
+      .map((d) => `<option value="${d.deviceId}">${d.label || "input"}</option>`)
+      .join("")}</select>
+    <label>Output device</label>
+    <select id="miniOutDev">${devices.output
+      .map((d) => `<option value="${d.deviceId}">${d.label || "output"}</option>`)
+      .join("")}</select>
+  `;
+  miniPopup.style.left = `${Math.max(8, rect.left)}px`;
+  miniPopup.style.top = `${Math.max(8, rect.top - 220)}px`;
+  miniPopup.hidden = false;
+  const outVol = miniPopup.querySelector("#miniOutVol");
+  const inVol = miniPopup.querySelector("#miniInVol");
+  const inDev = miniPopup.querySelector("#miniInDev");
+  const outDev = miniPopup.querySelector("#miniOutDev");
+  if (inVol) {
+    inVol.addEventListener("input", () => {
+      const on = Number(inVol.value) > 0;
+      setMicEnabled(on);
+    });
+  }
+  if (outVol) {
+    outVol.addEventListener("input", () => {
+      const v = Math.max(0, Math.min(200, Number(outVol.value) || 0));
+      if (peerNickname) {
+        volumePercentByPeer.set(peerNickname, v);
+        applyPeerGain(peerNickname);
+        persistPeerAudioSettings();
+      } else {
+        allSoundPercent = v;
+        for (const p of peers.keys()) {
+          volumePercentByPeer.set(p, v);
+          applyPeerGain(p);
+        }
+      }
+    });
+  }
+  if (inDev) {
+    inDev.addEventListener("change", async () => {
+      await replaceInputDevice(inDev.value);
+    });
+  }
+  if (outDev) {
+    outDev.addEventListener("change", () => applyOutputDeviceToAudios(outDev.value));
+  }
 }
 
 function getPeerVolumePercent(peerNickname) {
@@ -1044,65 +1280,16 @@ function renderParticipants() {
 
   for (const peerNickname of Array.from(peers.keys()).sort()) {
     const li = document.createElement("li");
-
-    const top = document.createElement("div");
-    top.className = "peer-top";
-
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
     nameSpan.textContent = peerNickname;
-
-    top.appendChild(nameSpan);
-    li.appendChild(top);
-
-    const volRow = document.createElement("div");
-    volRow.className = "peer-vol-row";
-    const range = document.createElement("input");
-    range.type = "range";
-    range.min = "0";
-    range.max = "200";
-    range.value = String(getPeerVolumePercent(peerNickname));
-    range.title = "Громкость 0–200%";
-    range.addEventListener("input", () => {
-      const v = Math.max(0, Math.min(200, Number(range.value) || 0));
-      volumePercentByPeer.set(peerNickname, v);
-      valSpan.textContent = `${v}%`;
-      applyPeerGain(peerNickname);
-
-      const a = remoteAudioByPeer.get(peerNickname);
-      if (a && !peerAudioGraphs.has(peerNickname)) {
-        a.volume = Math.min(1, v / 100);
-      }
-      persistPeerAudioSettings();
+    li.appendChild(nameSpan);
+    li.title = "Нажмите: громкость / mute";
+    li.style.cursor = "pointer";
+    li.addEventListener("click", async () => {
+      await openAudioPopup(li, peerNickname);
     });
-    const valSpan = document.createElement("span");
-    valSpan.className = "peer-vol-val";
-    valSpan.textContent = `${getPeerVolumePercent(peerNickname)}%`;
-    volRow.appendChild(range);
-    volRow.appendChild(valSpan);
-    li.appendChild(volRow);
-
-    const actions = document.createElement("div");
-    actions.className = "peer-actions";
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.textContent = isMuted ? "Включить звук" : "Заглушить";
-    toggleBtn.addEventListener("click", () => {
-      const nextHear = !(hearByPeer.get(peerNickname) !== false);
-      hearByPeer.set(peerNickname, nextHear);
-
-      const audio = remoteAudioByPeer.get(peerNickname);
-      if (audio) {
-        audio.muted = !nextHear;
-      }
-      applyPeerGain(peerNickname);
-      persistPeerAudioSettings();
-
-      renderParticipants();
-    });
-    actions.appendChild(toggleBtn);
-    li.appendChild(actions);
 
     participantsEl.appendChild(li);
   }
@@ -1242,6 +1429,14 @@ function requestKickParticipant(targetNick) {
     return;
   }
   socket.send(JSON.stringify({ type: "admin-kick", target: targetNick, secret: cachedAdminSecret }));
+}
+
+function sendAdminChannelOp(type, kind, id, name) {
+  if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  const payload = { type, kind, id, name, secret: cachedAdminSecret };
+  socket.send(JSON.stringify(payload));
 }
 
 function sendSignal(target, payload) {
@@ -1406,6 +1601,8 @@ function connectSocket() {
       JSON.stringify({
         type: "join",
         nickname: myNickname,
+        textChannel: currentTextChannel,
+        voiceChannel: currentVoiceChannel,
       })
     );
   };
@@ -1464,6 +1661,9 @@ function connectSocket() {
           if (micBtn) {
             micBtn.disabled = false;
           }
+          if (micToggleBottom) {
+            micToggleBottom.disabled = false;
+          }
           setChatEnabled(true);
           for (const peerNickname of message.peers) {
             await createPeerConnection(peerNickname, false);
@@ -1476,6 +1676,9 @@ function connectSocket() {
         renderChatHistory(message.messages || []);
         break;
       case "chat-message":
+        if (message.channelId && message.channelId !== currentTextChannel) {
+          break;
+        }
         appendChatMessage({
           id: message.id,
           nickname: message.nickname,
@@ -1490,13 +1693,40 @@ function connectSocket() {
         });
         break;
       case "chat-message-updated":
+        if (message.channelId && message.channelId !== currentTextChannel) {
+          break;
+        }
         applyChatMessageUpdated(message);
         break;
       case "chat-message-reactions":
+        if (message.channelId && message.channelId !== currentTextChannel) {
+          break;
+        }
         applyChatMessageReactions(message);
         break;
       case "chat-message-deleted":
+        if (message.channelId && message.channelId !== currentTextChannel) {
+          break;
+        }
         applyChatMessageDeleted(message.id);
+        break;
+      case "channels-state":
+        applyChannelsState(message);
+        if (Array.isArray(message.voicePeers)) {
+          for (const peerNickname of Array.from(peers.keys())) {
+            if (!message.voicePeers.includes(peerNickname)) {
+              removePeer(peerNickname);
+            }
+          }
+          enqueueRtc(async () => {
+            for (const peerNickname of message.voicePeers) {
+              if (!peers.has(peerNickname)) {
+                await createPeerConnection(peerNickname, true);
+              }
+            }
+          });
+          await rtcChain;
+        }
         break;
       case "join-rejected":
         joinedRoom = false;
@@ -1603,6 +1833,9 @@ function connectSocket() {
       if (micBtn) {
         micBtn.disabled = true;
       }
+      if (micToggleBottom) {
+        micToggleBottom.disabled = true;
+      }
       setChatEnabled(false);
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
@@ -1672,6 +1905,7 @@ document.addEventListener("click", () => {
   closeChatMenu();
   closeAllChatMessageMenus();
   closeAllReactionPickers();
+  closeMiniPopup();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -1682,6 +1916,10 @@ document.addEventListener("keydown", (e) => {
   closeAllChatMessageMenus();
   closeAllReactionPickers();
   closeAdminModal();
+  closeSimpleModal(profileModal);
+  closeSimpleModal(channelsModal);
+  closeSimpleModal(donateModal);
+  closeMiniPopup();
 });
 
 if (menuThemeBtn) {
@@ -1697,6 +1935,71 @@ if (menuThemeBtn) {
 if (menuAdminBtn) {
   menuAdminBtn.addEventListener("click", () => {
     openAdminModal();
+  });
+}
+
+if (menuProfileBtn) {
+  menuProfileBtn.addEventListener("click", () => {
+    if (profileNameInput) {
+      profileNameInput.value = nicknameInput ? nicknameInput.value.trim() : "";
+    }
+    openSimpleModal(profileModal);
+    closeChatMenu();
+  });
+}
+
+if (menuDonateBtn) {
+  menuDonateBtn.addEventListener("click", () => {
+    openSimpleModal(donateModal);
+    closeChatMenu();
+  });
+}
+
+if (profileCloseBtn) {
+  profileCloseBtn.addEventListener("click", () => closeSimpleModal(profileModal));
+}
+if (profileSaveBtn) {
+  profileSaveBtn.addEventListener("click", async () => {
+    const newName = String(profileNameInput ? profileNameInput.value : "").trim();
+    if (!newName) {
+      setStatus("Введите имя.");
+      return;
+    }
+    if (nicknameInput) {
+      nicknameInput.value = newName;
+    }
+    setCookie(NICK_COOKIE, newName, NICK_COOKIE_MAX_AGE);
+    closeSimpleModal(profileModal);
+    if (!joinedRoom) {
+      await join({ fromAutoRejoin: false });
+    }
+  });
+}
+if (channelsCloseBtn) {
+  channelsCloseBtn.addEventListener("click", () => closeSimpleModal(channelsModal));
+}
+if (donateCloseBtn) {
+  donateCloseBtn.addEventListener("click", () => closeSimpleModal(donateModal));
+}
+if (textChannelSelect) {
+  textChannelSelect.addEventListener("change", () => {
+    const channelId = textChannelSelect.value;
+    currentTextChannel = channelId;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "set-text-channel", channelId }));
+      if (chatLog) {
+        chatLog.innerHTML = "";
+      }
+    }
+  });
+}
+if (voiceChannelSelect) {
+  voiceChannelSelect.addEventListener("change", () => {
+    const channelId = voiceChannelSelect.value;
+    currentVoiceChannel = channelId;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "set-voice-channel", channelId }));
+    }
   });
 }
 
@@ -1726,6 +2029,44 @@ if (adminLogoutBtn) {
   });
 }
 
+if (adminCreateTextChannelBtn) {
+  adminCreateTextChannelBtn.addEventListener("click", () => {
+    const id = (prompt("ID текстового канала (латиница/цифры):", "text-") || "").trim();
+    const name = (prompt("Название текстового канала (кириллица можно):", "") || "").trim();
+    if (id && name) {
+      sendAdminChannelOp("admin-channel-create", "text", id, name);
+    }
+  });
+}
+if (adminCreateVoiceChannelBtn) {
+  adminCreateVoiceChannelBtn.addEventListener("click", () => {
+    const id = (prompt("ID голосового канала (латиница/цифры):", "voice-") || "").trim();
+    const name = (prompt("Название голосового канала (кириллица можно):", "") || "").trim();
+    if (id && name) {
+      sendAdminChannelOp("admin-channel-create", "voice", id, name);
+    }
+  });
+}
+if (adminRenameChannelBtn) {
+  adminRenameChannelBtn.addEventListener("click", () => {
+    const kind = (prompt("Тип канала: text или voice", "text") || "").trim().toLowerCase();
+    const id = (prompt("ID канала:", "") || "").trim();
+    const name = (prompt("Новое имя (кириллица можно):", "") || "").trim();
+    if ((kind === "text" || kind === "voice") && id && name) {
+      sendAdminChannelOp("admin-channel-rename", kind, id, name);
+    }
+  });
+}
+if (adminDeleteChannelBtn) {
+  adminDeleteChannelBtn.addEventListener("click", () => {
+    const kind = (prompt("Тип канала: text или voice", "text") || "").trim().toLowerCase();
+    const id = (prompt("ID канала для удаления:", "") || "").trim();
+    if ((kind === "text" || kind === "voice") && id) {
+      sendAdminChannelOp("admin-channel-delete", kind, id, "");
+    }
+  });
+}
+
 if (adminModalClose) {
   adminModalClose.addEventListener("click", () => {
     closeAdminModal();
@@ -1736,6 +2077,17 @@ if (adminModal) {
   adminModal.addEventListener("click", (e) => {
     if (e.target === adminModal) {
       closeAdminModal();
+    }
+  });
+}
+
+for (const m of [profileModal, channelsModal, donateModal]) {
+  if (!m) {
+    continue;
+  }
+  m.addEventListener("click", (e) => {
+    if (e.target === m) {
+      closeSimpleModal(m);
     }
   });
 }
@@ -1825,6 +2177,59 @@ function toggleMicFromUi() {
 if (micBtn) {
   micBtn.addEventListener("click", () => {
     toggleMicFromUi();
+  });
+}
+if (micDockBtn) {
+  micDockBtn.addEventListener("click", () => toggleMicFromUi());
+  micDockBtn.addEventListener("contextmenu", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await openAudioPopup(micDockBtn);
+  });
+}
+if (soundDockBtn) {
+  soundDockBtn.addEventListener("click", () => {
+    allSoundEnabled = !allSoundEnabled;
+    for (const peerNickname of peers.keys()) {
+      hearByPeer.set(peerNickname, allSoundEnabled);
+      applyPeerGain(peerNickname);
+    }
+    renderParticipants();
+  });
+  soundDockBtn.addEventListener("contextmenu", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await openAudioPopup(soundDockBtn);
+  });
+}
+if (micToggleBottom) {
+  micToggleBottom.addEventListener("click", () => {
+    toggleMicFromUi();
+  });
+}
+if (allSoundToggleBtn) {
+  allSoundToggleBtn.addEventListener("click", () => {
+    allSoundEnabled = !allSoundEnabled;
+    allSoundToggleBtn.textContent = allSoundEnabled ? "Звук всех: вкл" : "Звук всех: выкл";
+    for (const peerNickname of peers.keys()) {
+      hearByPeer.set(peerNickname, allSoundEnabled);
+      applyPeerGain(peerNickname);
+    }
+    persistPeerAudioSettings();
+    renderParticipants();
+  });
+}
+if (allSoundVolume) {
+  allSoundVolume.addEventListener("input", () => {
+    allSoundPercent = Math.max(0, Math.min(200, Number(allSoundVolume.value) || 0));
+    if (allSoundVolumeVal) {
+      allSoundVolumeVal.textContent = `${allSoundPercent}%`;
+    }
+    for (const peerNickname of peers.keys()) {
+      volumePercentByPeer.set(peerNickname, allSoundPercent);
+      applyPeerGain(peerNickname);
+    }
+    persistPeerAudioSettings();
   });
 }
 
@@ -2013,10 +2418,19 @@ if (chatImageBtn && chatImageInput) {
 }
 
 (function initFromStorage() {
-  const c = getCookie(NICK_COOKIE);
-  if (c && nicknameInput && !nicknameInput.value.trim()) {
+  let c = getCookie(NICK_COOKIE);
+  if (!c) {
+    c = `user-${Math.floor(1000 + Math.random() * 9000)}`;
+    setCookie(NICK_COOKIE, c, NICK_COOKIE_MAX_AGE);
+  }
+  if (nicknameInput && !nicknameInput.value.trim()) {
     nicknameInput.value = c;
   }
+  setTimeout(() => {
+    if (!joinedRoom) {
+      void join({ fromAutoRejoin: false });
+    }
+  }, 0);
 })();
 
 (function trySessionRejoin() {

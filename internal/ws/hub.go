@@ -17,8 +17,10 @@ import (
 )
 
 type client struct {
-	ws       *websocket.Conn
-	nickname string
+	ws          *websocket.Conn
+	nickname    string
+	textChannel string
+	voiceChannel string
 }
 
 type connWriter struct {
@@ -58,9 +60,12 @@ func (w *connWriter) close() {
 type hubState struct {
 	mu sync.Mutex
 
-	clientsByConn      map[*websocket.Conn]*client
-	connsByNickname    map[string]*websocket.Conn
-	writersByConn      map[*websocket.Conn]*connWriter
+	clientsByConn   map[*websocket.Conn]*client
+	connsByNickname map[string]*websocket.Conn
+	writersByConn   map[*websocket.Conn]*connWriter
+
+	textChannels  map[string]ChatChannel
+	voiceChannels map[string]ChatChannel
 }
 
 func (h *Hub) getState() *hubState {
@@ -69,6 +74,12 @@ func (h *Hub) getState() *hubState {
 			clientsByConn:   make(map[*websocket.Conn]*client),
 			connsByNickname: make(map[string]*websocket.Conn),
 			writersByConn:   make(map[*websocket.Conn]*connWriter),
+			textChannels: map[string]ChatChannel{
+				"text-general": {ID: "text-general", Name: "Общий текст"},
+			},
+			voiceChannels: map[string]ChatChannel{
+				"voice-general": {ID: "voice-general", Name: "Общий голос"},
+			},
 		}
 	})
 	return h.state
@@ -126,6 +137,10 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 				continue
 			}
 			switch msgType {
+			case "set-text-channel":
+				h.onSetTextChannel(c, sender, msg)
+			case "set-voice-channel":
+				h.onSetVoiceChannel(c, sender, msg)
 			case "signal":
 				h.onSignal(c, sender, msg)
 			case "chat":
@@ -142,6 +157,12 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 				h.onAdminPeers(c, msg)
 			case "admin-kick":
 				h.onAdminKick(c, sender, msg)
+			case "admin-channel-create":
+				h.onAdminChannelCreate(c, msg)
+			case "admin-channel-rename":
+				h.onAdminChannelRename(c, msg)
+			case "admin-channel-delete":
+				h.onAdminChannelDelete(c, msg)
 			default:
 				// chat ops added in mongo-store step
 				log.Printf("Unknown WebSocket message type: %s %v", msgType, msg)
@@ -156,7 +177,7 @@ func clientShouldNotSend(t string) bool {
 	case "hello", "chat-history", "chat-message", "join-accepted", "join-rejected",
 		"peer-joined", "peer-left", "signal-error", "error", "kicked",
 		"admin-verify-ok", "admin-peers-result", "chat-message-updated",
-		"chat-message-deleted", "chat-message-reactions":
+		"chat-message-deleted", "chat-message-reactions", "channels-state":
 		return true
 	default:
 		return false
@@ -183,19 +204,42 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		return
 	}
 
-	st.clientsByConn[c] = &client{ws: c, nickname: nickname}
+	textChannel := strings.TrimSpace(asString(msg["textChannel"]))
+	if _, ok := st.textChannels[textChannel]; !ok {
+		textChannel = "text-general"
+	}
+	voiceChannel := strings.TrimSpace(asString(msg["voiceChannel"]))
+	if _, ok := st.voiceChannels[voiceChannel]; !ok {
+		voiceChannel = "voice-general"
+	}
+
+	st.clientsByConn[c] = &client{ws: c, nickname: nickname, textChannel: textChannel, voiceChannel: voiceChannel}
 	st.connsByNickname[nickname] = c
 
 	peers := make([]string, 0, len(st.connsByNickname))
-	for name := range st.connsByNickname {
-		if name != nickname {
+	for name, conn := range st.connsByNickname {
+		if name != nickname && st.clientsByConn[conn] != nil && st.clientsByConn[conn].voiceChannel == voiceChannel {
 			peers = append(peers, name)
 		}
 	}
+	textChannels := channelsSorted(st.textChannels)
+	voiceChannels := channelsSorted(st.voiceChannels)
+	voicePeers := peersForVoiceChannelLocked(st, voiceChannel, nickname)
+	voiceMembers := voiceMembersByChannelLocked(st)
 	st.mu.Unlock()
 
 	h.sendMap(c, map[string]any{"type": "join-accepted", "nickname": nickname, "peers": peers})
-	h.broadcastMap(map[string]any{"type": "peer-joined", "nickname": nickname}, c)
+	h.sendMap(c, map[string]any{
+		"type":         "channels-state",
+		"textChannels": textChannels,
+		"voiceChannels": voiceChannels,
+		"currentText":  textChannel,
+		"currentVoice": voiceChannel,
+		"voicePeers":   voicePeers,
+		"voiceMembers": voiceMembers,
+	})
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-joined", "nickname": nickname}, voiceChannel, c)
+	h.broadcastChannelsState()
 
 	go func() {
 		msgs, err := h.getStore().History(context.Background(), 100)
@@ -215,13 +259,22 @@ func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
 	st := h.getState()
 	st.mu.Lock()
 	targetConn := st.connsByNickname[target]
+	targetClient := st.clientsByConn[targetConn]
 	st.mu.Unlock()
 
-	if targetConn == nil {
+	if targetConn == nil || targetClient == nil {
 		h.sendMap(c, map[string]any{
 			"type":   "signal-error",
 			"target": target,
 			"reason": "Target not found.",
+		})
+		return
+	}
+	if targetClient.voiceChannel != sender.voiceChannel {
+		h.sendMap(c, map[string]any{
+			"type":   "signal-error",
+			"target": target,
+			"reason": "Target in another voice channel.",
 		})
 		return
 	}
@@ -293,6 +346,181 @@ func (h *Hub) onAdminKick(c *websocket.Conn, sender *client, msg map[string]any)
 	_ = targetConn.Close()
 }
 
+func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string]any) {
+	channelID := strings.TrimSpace(asString(msg["channelId"]))
+	st := h.getState()
+	st.mu.Lock()
+	if _, ok := st.textChannels[channelID]; !ok {
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "error", "message": "Текстовый канал не найден."})
+		return
+	}
+	sender.textChannel = channelID
+	textChannels := channelsSorted(st.textChannels)
+	voiceChannels := channelsSorted(st.voiceChannels)
+	voicePeers := peersForVoiceChannelLocked(st, sender.voiceChannel, sender.nickname)
+	voiceMembers := voiceMembersByChannelLocked(st)
+	st.mu.Unlock()
+	h.sendMap(c, map[string]any{
+		"type":          "channels-state",
+		"textChannels":  textChannels,
+		"voiceChannels": voiceChannels,
+		"currentText":   sender.textChannel,
+		"currentVoice":  sender.voiceChannel,
+		"voicePeers":    voicePeers,
+		"voiceMembers":  voiceMembers,
+	})
+	h.broadcastChannelsState()
+}
+
+func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[string]any) {
+	channelID := strings.TrimSpace(asString(msg["channelId"]))
+	st := h.getState()
+	st.mu.Lock()
+	if _, ok := st.voiceChannels[channelID]; !ok {
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "error", "message": "Голосовой канал не найден."})
+		return
+	}
+	oldVoice := sender.voiceChannel
+	sender.voiceChannel = channelID
+	textChannels := channelsSorted(st.textChannels)
+	voiceChannels := channelsSorted(st.voiceChannels)
+	newVoicePeers := peersForVoiceChannelLocked(st, sender.voiceChannel, sender.nickname)
+	oldVoicePeers := peersForVoiceChannelLocked(st, oldVoice, sender.nickname)
+	voiceMembers := voiceMembersByChannelLocked(st)
+	st.mu.Unlock()
+
+	h.sendMap(c, map[string]any{
+		"type":          "channels-state",
+		"textChannels":  textChannels,
+		"voiceChannels": voiceChannels,
+		"currentText":   sender.textChannel,
+		"currentVoice":  sender.voiceChannel,
+		"voicePeers":    newVoicePeers,
+		"voiceMembers":  voiceMembers,
+	})
+	for _, nick := range oldVoicePeers {
+		h.sendMap(c, map[string]any{"type": "peer-left", "nickname": nick})
+	}
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-left", "nickname": sender.nickname}, oldVoice, c)
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-joined", "nickname": sender.nickname}, sender.voiceChannel, c)
+	h.broadcastChannelsState()
+}
+
+func (h *Hub) onAdminChannelCreate(c *websocket.Conn, msg map[string]any) {
+	if !h.adminPanelSecretOk(msg) {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
+		return
+	}
+	kind := strings.TrimSpace(asString(msg["kind"]))
+	id := strings.TrimSpace(asString(msg["id"]))
+	name := strings.TrimSpace(asString(msg["name"]))
+	if id == "" || name == "" {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Нужны id и имя канала."})
+		return
+	}
+	st := h.getState()
+	st.mu.Lock()
+	switch kind {
+	case "text":
+		st.textChannels[id] = ChatChannel{ID: id, Name: name}
+	case "voice":
+		st.voiceChannels[id] = ChatChannel{ID: id, Name: name}
+	default:
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неизвестный тип канала."})
+		return
+	}
+	st.mu.Unlock()
+	h.broadcastChannelsState()
+}
+
+func (h *Hub) onAdminChannelRename(c *websocket.Conn, msg map[string]any) {
+	if !h.adminPanelSecretOk(msg) {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
+		return
+	}
+	kind := strings.TrimSpace(asString(msg["kind"]))
+	id := strings.TrimSpace(asString(msg["id"]))
+	name := strings.TrimSpace(asString(msg["name"]))
+	if id == "" || name == "" {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Нужны id и имя канала."})
+		return
+	}
+	st := h.getState()
+	st.mu.Lock()
+	switch kind {
+	case "text":
+		if _, ok := st.textChannels[id]; !ok {
+			st.mu.Unlock()
+			h.sendMap(c, map[string]any{"type": "error", "message": "Канал не найден."})
+			return
+		}
+		st.textChannels[id] = ChatChannel{ID: id, Name: name}
+	case "voice":
+		if _, ok := st.voiceChannels[id]; !ok {
+			st.mu.Unlock()
+			h.sendMap(c, map[string]any{"type": "error", "message": "Канал не найден."})
+			return
+		}
+		st.voiceChannels[id] = ChatChannel{ID: id, Name: name}
+	default:
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неизвестный тип канала."})
+		return
+	}
+	st.mu.Unlock()
+	h.broadcastChannelsState()
+}
+
+func (h *Hub) onAdminChannelDelete(c *websocket.Conn, msg map[string]any) {
+	if !h.adminPanelSecretOk(msg) {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
+		return
+	}
+	kind := strings.TrimSpace(asString(msg["kind"]))
+	id := strings.TrimSpace(asString(msg["id"]))
+	if id == "" {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Нужен id канала."})
+		return
+	}
+	st := h.getState()
+	st.mu.Lock()
+	switch kind {
+	case "text":
+		if id == "text-general" {
+			st.mu.Unlock()
+			h.sendMap(c, map[string]any{"type": "error", "message": "Нельзя удалить канал по умолчанию."})
+			return
+		}
+		delete(st.textChannels, id)
+		for _, cl := range st.clientsByConn {
+			if cl.textChannel == id {
+				cl.textChannel = "text-general"
+			}
+		}
+	case "voice":
+		if id == "voice-general" {
+			st.mu.Unlock()
+			h.sendMap(c, map[string]any{"type": "error", "message": "Нельзя удалить канал по умолчанию."})
+			return
+		}
+		delete(st.voiceChannels, id)
+		for _, cl := range st.clientsByConn {
+			if cl.voiceChannel == id {
+				cl.voiceChannel = "voice-general"
+			}
+		}
+	default:
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "error", "message": "Неизвестный тип канала."})
+		return
+	}
+	st.mu.Unlock()
+	h.broadcastChannelsState()
+}
+
 func (h *Hub) adminPanelSecretOk(msg map[string]any) bool {
 	sec := asString(msg["secret"])
 	return sec == h.opts.AdminPanelPassword
@@ -343,7 +571,8 @@ func (h *Hub) leave(c *websocket.Conn) {
 	delete(st.writersByConn, c)
 	st.mu.Unlock()
 
-	h.broadcastMap(map[string]any{"type": "peer-left", "nickname": cl.nickname}, nil)
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-left", "nickname": cl.nickname}, cl.voiceChannel, nil)
+	h.broadcastChannelsState()
 	if w != nil {
 		w.close()
 	}
@@ -412,5 +641,118 @@ func asString(v any) string {
 	s = strings.TrimPrefix(s, "\"")
 	s = strings.TrimSuffix(s, "\"")
 	return strings.TrimSpace(s)
+}
+
+func channelsSorted(src map[string]ChatChannel) []ChatChannel {
+	out := make([]ChatChannel, 0, len(src))
+	for _, ch := range src {
+		out = append(out, ch)
+	}
+	coll := collate.New(language.Russian)
+	sort.Slice(out, func(i, j int) bool {
+		return coll.CompareString(out[i].Name, out[j].Name) < 0
+	})
+	return out
+}
+
+func peersForVoiceChannelLocked(st *hubState, voiceChannel string, excludeNickname string) []string {
+	out := make([]string, 0, len(st.clientsByConn))
+	for _, cl := range st.clientsByConn {
+		if cl == nil || cl.voiceChannel != voiceChannel || cl.nickname == excludeNickname {
+			continue
+		}
+		out = append(out, cl.nickname)
+	}
+	coll := collate.New(language.Russian)
+	sort.Slice(out, func(i, j int) bool {
+		return coll.CompareString(out[i], out[j]) < 0
+	})
+	return out
+}
+
+func voiceMembersByChannelLocked(st *hubState) map[string][]string {
+	out := make(map[string][]string, len(st.voiceChannels))
+	for id := range st.voiceChannels {
+		out[id] = []string{}
+	}
+	for _, cl := range st.clientsByConn {
+		if cl == nil {
+			continue
+		}
+		out[cl.voiceChannel] = append(out[cl.voiceChannel], cl.nickname)
+	}
+	coll := collate.New(language.Russian)
+	for id := range out {
+		sort.Slice(out[id], func(i, j int) bool {
+			return coll.CompareString(out[id][i], out[id][j]) < 0
+		})
+	}
+	return out
+}
+
+func (h *Hub) broadcastChannelsState() {
+	st := h.getState()
+	st.mu.Lock()
+	textChannels := channelsSorted(st.textChannels)
+	voiceChannels := channelsSorted(st.voiceChannels)
+	voiceMembers := voiceMembersByChannelLocked(st)
+	st.mu.Unlock()
+	h.broadcastMap(
+		map[string]any{
+			"type":          "channels-state",
+			"textChannels":  textChannels,
+			"voiceChannels": voiceChannels,
+			"voiceMembers":  voiceMembers,
+		},
+		nil,
+	)
+}
+
+func (h *Hub) broadcastToVoiceChannel(payload map[string]any, voiceChannel string, except *websocket.Conn) {
+	st := h.getState()
+	st.mu.Lock()
+	conns := make([]*websocket.Conn, 0, len(st.writersByConn))
+	for conn, cl := range st.clientsByConn {
+		if cl == nil || cl.voiceChannel != voiceChannel {
+			continue
+		}
+		if except != nil && conn == except {
+			continue
+		}
+		conns = append(conns, conn)
+	}
+	st.mu.Unlock()
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	for _, conn := range conns {
+		h.sendBytes(conn, b)
+	}
+}
+
+func (h *Hub) broadcastToTextChannel(payload map[string]any, textChannel string, except *websocket.Conn) {
+	st := h.getState()
+	st.mu.Lock()
+	conns := make([]*websocket.Conn, 0, len(st.writersByConn))
+	for conn, cl := range st.clientsByConn {
+		if cl == nil || cl.textChannel != textChannel {
+			continue
+		}
+		if except != nil && conn == except {
+			continue
+		}
+		conns = append(conns, conn)
+	}
+	st.mu.Unlock()
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	for _, conn := range conns {
+		h.sendBytes(conn, b)
+	}
 }
 

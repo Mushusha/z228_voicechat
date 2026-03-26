@@ -43,12 +43,13 @@ func (h *Hub) onChat(c *websocket.Conn, sender *client, msg map[string]any) {
 			"text":      m.Text,
 			"createdAt": m.CreatedAt.UTC().Format(time.RFC3339Nano),
 			"reactions": map[string][]string{},
+			"channelId": sender.textChannel,
 		}
 		if m.ImageMime != "" && m.ImageData != "" {
 			payload["imageMime"] = m.ImageMime
 			payload["imageData"] = m.ImageData
 		}
-		h.broadcastMap(payload, nil)
+		h.broadcastToTextChannel(payload, sender.textChannel, nil)
 	}()
 }
 
@@ -93,12 +94,13 @@ func (h *Hub) onChatEdit(c *websocket.Conn, sender *client, msg map[string]any) 
 			"text":      m.Text,
 			"createdAt": m.CreatedAt.UTC().Format(time.RFC3339Nano),
 			"reactions": m.Reactions,
+			"channelId": sender.textChannel,
 		}
 		if m.ImageMime != "" && m.ImageData != "" {
 			payload["imageMime"] = m.ImageMime
 			payload["imageData"] = m.ImageData
 		}
-		h.broadcastMap(payload, nil)
+		h.broadcastToTextChannel(payload, sender.textChannel, nil)
 	}()
 }
 
@@ -126,7 +128,7 @@ func (h *Hub) onChatDelete(c *websocket.Conn, sender *client, msg map[string]any
 			h.sendMap(c, map[string]any{"type": "error", "message": "Сообщение не найдено."})
 			return
 		}
-		h.broadcastMap(map[string]any{"type": "chat-message-deleted", "id": id}, nil)
+		h.broadcastToTextChannel(map[string]any{"type": "chat-message-deleted", "id": id, "channelId": sender.textChannel}, sender.textChannel, nil)
 	}()
 }
 
@@ -155,7 +157,7 @@ func (h *Hub) onChatReact(c *websocket.Conn, sender *client, msg map[string]any)
 			h.sendMap(c, map[string]any{"type": "error", "message": "Сообщение не найдено."})
 			return
 		}
-		h.broadcastMap(map[string]any{"type": "chat-message-reactions", "id": id, "reactions": r}, nil)
+		h.broadcastToTextChannel(map[string]any{"type": "chat-message-reactions", "id": id, "reactions": r, "channelId": sender.textChannel}, sender.textChannel, nil)
 	}()
 }
 

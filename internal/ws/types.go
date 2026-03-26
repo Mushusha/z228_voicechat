@@ -6,3 +6,8 @@ type HelloPayload struct {
 	ChatMessageOps bool   `json:"chatMessageOps"`
 }
 
+type ChatChannel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+

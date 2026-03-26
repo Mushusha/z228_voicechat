@@ -65,6 +65,36 @@
         border-right: 1px solid var(--border);
         min-height: 0;
       }
+      .toolbar {
+        display: none;
+      }
+      .channel-groups {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .channel-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .channel-btn {
+        width: 100%;
+        text-align: left;
+        background: transparent;
+      }
+      .channel-btn.active {
+        border-color: var(--accent);
+        background: var(--accent-dim);
+      }
+      .voice-members-preview {
+        margin: 4px 0 8px 10px;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+      }
 
       .brand {
         display: flex;
@@ -126,6 +156,7 @@
         border-top: 1px solid var(--border);
         text-align: center;
         background: var(--surface);
+        display: none;
       }
 
       .donate-qr {
@@ -868,15 +899,59 @@
       .chat-footer {
         flex-shrink: 0;
         display: flex;
+        flex-wrap: wrap;
         gap: 10px;
         padding: 14px 20px;
         border-top: 1px solid var(--border);
         background: var(--surface);
       }
+      .left-audio-dock {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        z-index: 300;
+        display: flex;
+        gap: 8px;
+      }
+      .icon-btn {
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+      }
+      .mini-popup {
+        position: fixed;
+        z-index: 400;
+        min-width: 230px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        box-shadow: 0 10px 26px rgba(0,0,0,.4);
+      }
+      .mini-popup[hidden] { display: none !important; }
+      .mini-popup label { font-size: .8rem; color: var(--text-muted); display:block; margin-top:8px; }
+      .mini-popup input, .mini-popup select { width: 100%; }
 
       .chat-footer input[type="text"] {
         flex: 1;
         min-width: 0;
+      }
+
+      .audio-master-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+      }
+
+      .audio-master-row input[type="range"] {
+        flex: 1;
+        accent-color: var(--accent);
       }
 
       /* Сенсор: без hover — меню и реакции всегда доступны */
@@ -931,8 +1006,20 @@
               <p id="status">Не подключено</p>
             </div>
             <div>
-              <h2 class="section-title">Участники</h2>
-              <ul id="participants"></ul>
+              <div class="channel-groups">
+                <div>
+                  <h2 class="section-title">Текстовые каналы</h2>
+                  <ul id="textChannelsList" class="channel-list"></ul>
+                </div>
+                <div>
+                  <h2 class="section-title">Голосовые каналы</h2>
+                  <ul id="voiceChannelsList" class="channel-list"></ul>
+                </div>
+                <div>
+                  <h2 class="section-title">В группе</h2>
+                  <ul id="participants"></ul>
+                </div>
+              </div>
             </div>
           </div>
           <div class="sidebar-donate">
@@ -964,11 +1051,17 @@
               ⋮
             </button>
             <div id="chatDropdown" class="chat-dropdown" role="menu" hidden>
+              <button type="button" id="menuProfileBtn" class="dropdown-item" role="menuitem">
+                Регистрация / имя
+              </button>
               <button type="button" id="menuThemeBtn" class="dropdown-item" role="menuitem">
                 Тема: тёмная
               </button>
               <button type="button" id="menuAdminBtn" class="dropdown-item" role="menuitem">
                 Админ-панель
+              </button>
+              <button type="button" id="menuDonateBtn" class="dropdown-item" role="menuitem">
+                Донат
               </button>
             </div>
           </div>
@@ -995,6 +1088,43 @@
         </footer>
       </main>
     </div>
+    <div class="left-audio-dock">
+      <button id="micDockBtn" class="icon-btn" type="button" title="Микрофон">🎙️</button>
+      <button id="soundDockBtn" class="icon-btn" type="button" title="Звук всех">🎧</button>
+    </div>
+    <div id="miniPopup" class="mini-popup" hidden></div>
+    <div id="profileModal" class="modal-overlay" hidden>
+      <div class="modal-dialog" role="dialog" aria-modal="true">
+        <h2>Регистрация</h2>
+        <p>Введите имя. Его можно поменять позже в меню.</p>
+        <input id="profileNameInput" type="text" maxlength="30" placeholder="Ваше имя" />
+        <div class="admin-modal-actions">
+          <button id="profileSaveBtn" type="button" class="btn-primary">Сохранить</button>
+          <button id="profileCloseBtn" type="button">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <div id="channelsModal" class="modal-overlay" hidden>
+      <div class="modal-dialog" role="dialog" aria-modal="true">
+        <h2>Каналы</h2>
+        <label for="textChannelSelect">Текстовый канал</label>
+        <select id="textChannelSelect"></select>
+        <label for="voiceChannelSelect">Голосовой канал</label>
+        <select id="voiceChannelSelect"></select>
+        <div class="admin-modal-actions">
+          <button id="channelsCloseBtn" type="button" class="btn-primary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <div id="donateModal" class="modal-overlay" hidden>
+      <div class="modal-dialog" role="dialog" aria-modal="true">
+        <h2>Донат</h2>
+        <img class="donate-qr" src="./donate-qr.png?v=1" width="132" height="132" alt="QR-код доната" loading="lazy" />
+        <div class="admin-modal-actions">
+          <button id="donateCloseBtn" type="button" class="btn-primary">Закрыть</button>
+        </div>
+      </div>
+    </div>
     <div id="adminModal" class="modal-overlay" hidden>
       <div class="modal-dialog" role="dialog" aria-labelledby="adminModalTitle" aria-modal="true">
         <h2 id="adminModalTitle">Админ-панель</h2>
@@ -1016,6 +1146,13 @@
         <div id="adminPanelBody" hidden>
           <h3 class="modal-subtitle">Участники</h3>
           <ul id="adminParticipantsList" class="admin-participant-list" aria-label="Список участников"></ul>
+          <h3 class="modal-subtitle">Каналы</h3>
+          <div class="admin-modal-actions">
+            <button type="button" id="adminCreateTextChannelBtn">+ Текст</button>
+            <button type="button" id="adminCreateVoiceChannelBtn">+ Голос</button>
+            <button type="button" id="adminRenameChannelBtn">Переименовать</button>
+            <button type="button" id="adminDeleteChannelBtn">Удалить</button>
+          </div>
           <button type="button" id="adminLogoutBtn" class="btn-text">Выйти из админки</button>
         </div>
         <div class="admin-modal-actions">
@@ -1023,6 +1160,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=35"></script>
+    <script src="./app.js?v=36"></script>
   </body>
 </html>
