@@ -3,6 +3,7 @@ package auto
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"zalupa228local/internal/chatstore"
@@ -13,6 +14,7 @@ import (
 type Store struct {
 	mongo *mongostore.Store
 	mem   *mem.Store
+	mongoLive atomic.Bool
 }
 
 func New(ctx context.Context, mongoURI string, memStore *mem.Store) *Store {
@@ -33,17 +35,39 @@ func New(ctx context.Context, mongoURI string, memStore *mem.Store) *Store {
 		log.Printf("Mongo ensure indexes: %v", err)
 	}
 	s.mongo = m
+	s.startMongoHealthLoop()
 	log.Printf("MongoDB connected — chat persists in the database")
 	return s
 }
 
-func (s *Store) liveMongo(ctx context.Context) bool {
+func (s *Store) startMongoHealthLoop() {
+	if s.mongo == nil {
+		s.mongoLive.Store(false)
+		return
+	}
+	go func() {
+		// Keep write path fast: update health in background.
+		t := time.NewTicker(1500 * time.Millisecond)
+		defer t.Stop()
+
+		probe := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			s.mongoLive.Store(s.mongo.Ping(ctx) == nil)
+		}
+
+		probe()
+		for range t.C {
+			probe()
+		}
+	}()
+}
+
+func (s *Store) liveMongo(_ context.Context) bool {
 	if s.mongo == nil {
 		return false
 	}
-	ctx0, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	return s.mongo.Ping(ctx0) == nil
+	return s.mongoLive.Load()
 }
 
 func (s *Store) LiveMongo(ctx context.Context) bool {

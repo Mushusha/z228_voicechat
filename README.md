@@ -8,22 +8,17 @@
 
 - Go 1.23+
 - Браузер с поддержкой WebRTC (Chrome/Edge/Firefox)
-- MongoDB (опционально, для постоянной истории)
+- **MongoDB** (опционально для Go-сервера): если недоступна, используется in-memory чат; для постоянного хранения — `docker compose` или локальный Mongo
 
 ## Быстрый запуск локально (без Docker)
 
-Из корня репозитория:
-
-1. (Опционально) подними MongoDB или задай `MONGODB_URI`.
-2. Собери бинарник:
-   - `env GOPATH="$PWD/.go/gopath" GOMODCACHE="$PWD/.go/modcache" GOCACHE="$PWD/.go/cache" go build -o bin/z228_server ./cmd/server`
-3. Запусти сервер:
-   - `env GOPATH="$PWD/.go/gopath" GOMODCACHE="$PWD/.go/modcache" GOCACHE="$PWD/.go/cache" ./bin/z228_server`
-
-Сервер слушает:
-
-- HTTP: `http://127.0.0.1:3000` (или `PORT`)
-- HTTPS: `https://127.0.0.1:3443` (или `HTTPS_PORT`, `0` чтобы отключить)
+1. Откройте терминал в каталоге проекта `zalupa228local` (или в папке с этим репозиторием).
+2. (Опционально) Запустите MongoDB или задайте **`MONGODB_URI`**. Без БД сервер всё равно поднимется.
+3. Запустите сервер:
+   - `go run ./cmd/server`
+4. Сервер поднимется на порту `3000` (или в `PORT`, если задана переменная окружения).
+5. Дополнительно поднимается **HTTPS** на порту `3443` (или `HTTPS_PORT`, если задана). Используйте его для доступа с других устройств в сети — микрофон в браузере требует **HTTPS** или `localhost`.
+6. **Админ-панель** (исключение участников): пароль по умолчанию `admin123`; в проде задайте **`ADMIN_PANEL_PASSWORD`** в окружении.
 
 ## Переменные окружения
 
@@ -61,8 +56,8 @@ HTTP по LAN-IP обычно откроет страницу, но микроф
 Из корня проекта:
 
 - `docker compose up --build`
-- или PowerShell: `.\scripts\run-docker.ps1`
-- или Linux/macOS: `chmod +x scripts/run-docker.sh && ./scripts/run-docker.sh`
+- или скрипт **PowerShell (Windows):** `.\scripts\run-docker.ps1`
+- или **Linux/macOS:** `chmod +x scripts/run-docker.sh` и `./scripts/run-docker.sh`
 
 Порты приложения наружу: `3000` (HTTP) и `3443` (HTTPS). Mongo доступна только внутри сети compose.
 

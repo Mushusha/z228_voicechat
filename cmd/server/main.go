@@ -91,7 +91,7 @@ func listenTCP(host string, port int) (net.Listener, error) {
 		lc.Control = func(network, address string, c syscall.RawConn) error {
 			var ctrlErr error
 			if err := c.Control(func(fd uintptr) {
-				ctrlErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0)
+				ctrlErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0)
 			}); err != nil {
 				return err
 			}
