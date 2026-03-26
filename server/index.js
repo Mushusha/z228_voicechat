@@ -106,6 +106,7 @@ function appendMemoryChat(channel, nickname, text, imageMime, imageData) {
     text: text || "",
     imageMime: imageMime || null,
     imageData: imageData || null,
+    reactions: {},
     createdAt: new Date(),
   };
   arr.push(row);
@@ -113,6 +114,19 @@ function appendMemoryChat(channel, nickname, text, imageMime, imageData) {
     arr.shift();
   }
   return row;
+}
+
+function serializeReactionsForPayload(raw) {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (Array.isArray(v) && v.length) {
+      out[k] = [...v];
+    }
+  }
+  return out;
 }
 
 function memoryChatHistoryPayload(channel) {
@@ -123,7 +137,50 @@ function memoryChatHistoryPayload(channel) {
     createdAt: d.createdAt.toISOString(),
     imageMime: d.imageMime || undefined,
     imageData: d.imageData || undefined,
+    reactions: serializeReactionsForPayload(d.reactions),
   }));
+}
+
+function mongooseLive() {
+  return mongoReady && mongoose.connection.readyState === 1;
+}
+
+function normalizeReactionEmoji(raw) {
+  const s = String(raw || "").trim();
+  if (!s || s.length > 16) {
+    return null;
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(s)) {
+    return null;
+  }
+  return s;
+}
+
+function toggleReactionOnStore(reactions, emoji, nickname) {
+  const r = reactions;
+  if (!r[emoji]) {
+    r[emoji] = [nickname];
+    return;
+  }
+  const arr = r[emoji];
+  const idx = arr.indexOf(nickname);
+  if (idx >= 0) {
+    arr.splice(idx, 1);
+    if (arr.length === 0) {
+      delete r[emoji];
+    }
+  } else {
+    arr.push(nickname);
+  }
+}
+
+function findMemoryMessageRow(channel, id) {
+  const sid = String(id || "");
+  if (!sid) {
+    return null;
+  }
+  const arr = getMemoryChatArray(channel);
+  return arr.find((row) => String(row.id) === sid) || null;
 }
 
 function chatHistoryMongoFilter(channel) {
@@ -348,7 +405,7 @@ function attachWebSocketServer(server) {
   wssList.push(wss);
 
   wss.on("connection", (ws) => {
-    send(ws, { type: "hello", adminPanel: true });
+    send(ws, { type: "hello", adminPanel: true, chatMessageOps: true });
     send(ws, buildChannelListPayload());
 
     ws.on("message", (raw) => {
@@ -372,6 +429,9 @@ function attachWebSocketServer(server) {
         "channel-list",
         "chat-history",
         "chat-message",
+        "chat-message-updated",
+        "chat-message-deleted",
+        "chat-message-reactions",
         "join-accepted",
         "join-rejected",
         "peer-joined",
@@ -476,6 +536,7 @@ function attachWebSocketServer(server) {
                 createdAt: d.createdAt.toISOString(),
                 imageMime: d.imageMime || undefined,
                 imageData: d.imageData || undefined,
+                reactions: serializeReactionsForPayload(d.reactions),
               }));
             } else {
               messages = memoryChatHistoryPayload(textChannel);
@@ -518,7 +579,7 @@ function attachWebSocketServer(server) {
             let outMime = normalizedImg ? normalizedImg.mime : null;
             let outData = normalizedImg ? normalizedImg.data : null;
             let createdAt;
-            if (mongoReady && mongoose.connection.readyState === 1) {
+            if (mongooseLive()) {
               knownTextChannelNames.add(sender.textChannel);
               const doc = await ChatMessage.create({
                 channel: sender.textChannel,
@@ -526,6 +587,7 @@ function attachWebSocketServer(server) {
                 text: outText,
                 imageMime: outMime || undefined,
                 imageData: outData || undefined,
+                reactions: {},
               });
               id = String(doc._id);
               outText = doc.text || "";
@@ -547,6 +609,7 @@ function attachWebSocketServer(server) {
               nickname: sender.nickname,
               text: outText,
               createdAt,
+              reactions: {},
             };
             if (outMime && outData) {
               payload.imageMime = outMime;
@@ -556,6 +619,152 @@ function attachWebSocketServer(server) {
           } catch (error) {
             console.error("chat save:", error);
             send(ws, { type: "error", message: "Не удалось сохранить сообщение." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-edit") {
+        const idRaw = message.id != null ? String(message.id).trim() : "";
+        const newText = String(message.text || "").trim().slice(0, 500);
+        if (!idRaw || !newText) {
+          send(ws, { type: "error", message: "Укажите сообщение и новый текст." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive()) {
+              if (!mongoose.isValidObjectId(idRaw)) {
+                send(ws, { type: "error", message: "Некорректный id сообщения." });
+                return;
+              }
+              const doc = await ChatMessage.findOne({
+                _id: idRaw,
+                channel: sender.textChannel,
+                nickname: sender.nickname,
+              }).lean();
+              if (!doc) {
+                send(ws, { type: "error", message: "Сообщение не найдено или чужое." });
+                return;
+              }
+              await ChatMessage.updateOne(
+                { _id: idRaw, channel: sender.textChannel, nickname: sender.nickname },
+                { $set: { text: newText } }
+              );
+            } else {
+              const row = findMemoryMessageRow(sender.textChannel, idRaw);
+              if (!row || row.nickname !== sender.nickname) {
+                send(ws, { type: "error", message: "Сообщение не найдено или чужое." });
+                return;
+              }
+              row.text = newText;
+            }
+            broadcastToTextChannel(sender.textChannel, {
+              type: "chat-message-updated",
+              id: idRaw,
+              text: newText,
+            });
+          } catch (error) {
+            console.error("chat-edit:", error);
+            send(ws, { type: "error", message: "Не удалось изменить сообщение." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-delete") {
+        const idRaw = message.id != null ? String(message.id).trim() : "";
+        if (!idRaw) {
+          send(ws, { type: "error", message: "Укажите id сообщения." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive()) {
+              if (!mongoose.isValidObjectId(idRaw)) {
+                send(ws, { type: "error", message: "Некорректный id сообщения." });
+                return;
+              }
+              const res = await ChatMessage.deleteOne({
+                _id: idRaw,
+                channel: sender.textChannel,
+                nickname: sender.nickname,
+              });
+              if (res.deletedCount === 0) {
+                send(ws, { type: "error", message: "Сообщение не найдено или чужое." });
+                return;
+              }
+            } else {
+              const arr = getMemoryChatArray(sender.textChannel);
+              const idx = arr.findIndex((row) => String(row.id) === idRaw && row.nickname === sender.nickname);
+              if (idx === -1) {
+                send(ws, { type: "error", message: "Сообщение не найдено или чужое." });
+                return;
+              }
+              arr.splice(idx, 1);
+            }
+            broadcastToTextChannel(sender.textChannel, {
+              type: "chat-message-deleted",
+              id: idRaw,
+            });
+          } catch (error) {
+            console.error("chat-delete:", error);
+            send(ws, { type: "error", message: "Не удалось удалить сообщение." });
+          }
+        })();
+        return;
+      }
+
+      if (msgType === "chat-react") {
+        const idRaw = message.id != null ? String(message.id).trim() : "";
+        const emoji = normalizeReactionEmoji(message.emoji);
+        if (!idRaw || !emoji) {
+          send(ws, { type: "error", message: "Некорректная реакция." });
+          return;
+        }
+        void (async () => {
+          try {
+            if (mongooseLive()) {
+              if (!mongoose.isValidObjectId(idRaw)) {
+                send(ws, { type: "error", message: "Некорректный id сообщения." });
+                return;
+              }
+              const doc = await ChatMessage.findOne({
+                _id: idRaw,
+                channel: sender.textChannel,
+              }).lean();
+              if (!doc) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              const reactRaw = doc.reactions && typeof doc.reactions === "object" ? doc.reactions : {};
+              const next = { ...serializeReactionsForPayload(reactRaw) };
+              toggleReactionOnStore(next, emoji, sender.nickname);
+              await ChatMessage.updateOne({ _id: idRaw, channel: sender.textChannel }, { $set: { reactions: next } });
+              broadcastToTextChannel(sender.textChannel, {
+                type: "chat-message-reactions",
+                id: idRaw,
+                reactions: serializeReactionsForPayload(next),
+              });
+            } else {
+              const row = findMemoryMessageRow(sender.textChannel, idRaw);
+              if (!row) {
+                send(ws, { type: "error", message: "Сообщение не найдено." });
+                return;
+              }
+              if (!row.reactions || typeof row.reactions !== "object") {
+                row.reactions = {};
+              }
+              toggleReactionOnStore(row.reactions, emoji, sender.nickname);
+              broadcastToTextChannel(sender.textChannel, {
+                type: "chat-message-reactions",
+                id: idRaw,
+                reactions: serializeReactionsForPayload(row.reactions),
+              });
+            }
+          } catch (error) {
+            console.error("chat-react:", error);
+            send(ws, { type: "error", message: "Не удалось обновить реакцию." });
           }
         })();
         return;

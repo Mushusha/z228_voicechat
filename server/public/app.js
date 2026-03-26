@@ -121,6 +121,7 @@ const micBtn = document.getElementById("micBtn");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
 const chatLog = document.getElementById("chatLog");
+const chatMainEl = document.querySelector(".chat-main");
 const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
 const chatImageInput = document.getElementById("chatImageInput");
@@ -214,6 +215,8 @@ let cachedAdminSecret = null;
 let pendingAdminSecretAttempt = null;
 let awaitingAdminVerifyResponse = false;
 let adminServerPeers = [];
+/** null до hello; false если сервер без chat-edit/delete/react. */
+let serverChatMessageOps = null;
 
 function normalizeChannelForJoin(raw) {
   let s = String(raw ?? "").trim().toLowerCase();
@@ -481,6 +484,66 @@ function formatChatTime(iso) {
   }
 }
 
+function formatReactionsSummary(reactions) {
+  if (!reactions || typeof reactions !== "object") {
+    return "";
+  }
+  const parts = [];
+  for (const [emoji, list] of Object.entries(reactions)) {
+    if (Array.isArray(list) && list.length) {
+      parts.push(`${emoji}${list.length}`);
+    }
+  }
+  return parts.length ? parts.join(" ") : "";
+}
+
+function findChatLineByMsgId(id) {
+  if (!chatLog || id == null) {
+    return null;
+  }
+  const sid = String(id);
+  return chatLog.querySelector(`[data-chat-msg-id="${sid}"]`);
+}
+
+function applyChatMessageUpdated(id, text) {
+  const line = findChatLineByMsgId(id);
+  if (!line) {
+    return;
+  }
+  const textEl = line.querySelector(".chat-text");
+  if (textEl) {
+    textEl.textContent = text || "";
+  }
+}
+
+function applyChatMessageDeleted(id) {
+  const line = findChatLineByMsgId(id);
+  if (line) {
+    line.remove();
+  }
+}
+
+function applyChatMessageReactions(id, reactions) {
+  const line = findChatLineByMsgId(id);
+  if (!line) {
+    return;
+  }
+  let rEl = line.querySelector(".chat-reactions-summary");
+  const summary = formatReactionsSummary(reactions);
+  if (!summary) {
+    if (rEl) {
+      rEl.remove();
+    }
+    return;
+  }
+  if (!rEl) {
+    rEl = document.createElement("div");
+    rEl.className = "chat-reactions-summary";
+    line.appendChild(rEl);
+  }
+  rEl.textContent = summary;
+}
+
 function uint8ToBase64(bytes) {
   let binary = "";
   const chunk = 8192;
@@ -544,12 +607,15 @@ async function prepareImageForChat(file) {
   }
 }
 
-function appendChatMessage({ nickname, text, createdAt, imageMime, imageData }) {
+function appendChatMessage({ id, nickname, text, createdAt, imageMime, imageData, reactions }) {
   if (!chatLog) {
     return;
   }
   const line = document.createElement("div");
   line.className = "chat-line";
+  if (id != null && String(id).trim() !== "") {
+    line.dataset.chatMsgId = String(id).trim();
+  }
   const meta = document.createElement("div");
   meta.className = "chat-meta";
   meta.textContent = `${nickname} · ${formatChatTime(createdAt)}`;
@@ -571,6 +637,13 @@ function appendChatMessage({ nickname, text, createdAt, imageMime, imageData }) 
   }
   line.appendChild(meta);
   line.appendChild(body);
+  const reactSummary = formatReactionsSummary(reactions);
+  if (reactSummary) {
+    const rEl = document.createElement("div");
+    rEl.className = "chat-reactions-summary";
+    rEl.textContent = reactSummary;
+    line.appendChild(rEl);
+  }
   chatLog.appendChild(line);
   chatLog.scrollTop = chatLog.scrollHeight;
 }
@@ -582,11 +655,13 @@ function renderChatHistory(messages) {
   chatLog.innerHTML = "";
   for (const m of messages) {
     appendChatMessage({
+      id: m.id,
       nickname: m.nickname,
       text: m.text,
       createdAt: m.createdAt,
       imageMime: m.imageMime,
       imageData: m.imageData,
+      reactions: m.reactions != null && typeof m.reactions === "object" ? m.reactions : undefined,
     });
   }
 }
@@ -1296,6 +1371,12 @@ function connectSocket() {
 
     switch (message.type) {
       case "hello":
+        serverChatMessageOps = message.chatMessageOps === true;
+        if (joinedRoom && serverChatMessageOps === false) {
+          setStatus(
+            `${myNickname ? `В сети как ${myNickname}. ` : ""}На сервере нет правок чата — обновите backend (rebuild образа Docker).`
+          );
+        }
         break;
       case "channel-list":
         renderChannelRoster(message);
@@ -1329,7 +1410,14 @@ function connectSocket() {
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
-          setStatus(`В сети как ${message.nickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`);
+          {
+            let st = `В сети как ${message.nickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`;
+            if (serverChatMessageOps === false) {
+              st +=
+                ". Сервер устарел: нет правок чата — обновите backend.";
+            }
+            setStatus(st);
+          }
           if (micBtn) {
             micBtn.disabled = false;
           }
@@ -1346,12 +1434,26 @@ function connectSocket() {
         break;
       case "chat-message":
         appendChatMessage({
+          id: message.id,
           nickname: message.nickname,
           text: message.text,
           createdAt: message.createdAt,
           imageMime: message.imageMime,
           imageData: message.imageData,
+          reactions:
+            message.reactions != null && typeof message.reactions === "object"
+              ? message.reactions
+              : undefined,
         });
+        break;
+      case "chat-message-updated":
+        applyChatMessageUpdated(message.id, message.text);
+        break;
+      case "chat-message-deleted":
+        applyChatMessageDeleted(message.id);
+        break;
+      case "chat-message-reactions":
+        applyChatMessageReactions(message.id, message.reactions);
         break;
       case "join-rejected":
         joinedRoom = false;
@@ -1450,8 +1552,15 @@ function connectSocket() {
           }
           break;
         }
-        console.error("Server error:", message.message);
-        setStatus(`Ошибка: ${message.message}`);
+        {
+          let errText2 = message.message || "Ошибка.";
+          if (/unknown message type:\s*chat-(?:edit|delete|react)/i.test(errText2)) {
+            errText2 =
+              "Сервер без правок чата (старый образ). Выполните: docker compose build && docker compose up -d";
+          }
+          console.error("Server error:", message.message);
+          setStatus(`Ошибка: ${errText2}`);
+        }
         break;
       default:
         break;
