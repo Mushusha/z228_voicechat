@@ -487,6 +487,14 @@
         border-bottom: 1px solid var(--border);
       }
 
+      .admin-channel-row {
+        flex-wrap: wrap;
+      }
+
+      .admin-channel-row .admin-participant-name {
+        flex: 1 1 120px;
+      }
+
       .admin-participant-name {
         font-size: 0.9rem;
         min-width: 0;
@@ -596,6 +604,37 @@
         border-color: var(--accent);
         background: var(--accent-dim);
         opacity: 1;
+      }
+
+      #chatLog .chat-react-details {
+        margin-top: 6px;
+        max-width: max-content;
+      }
+
+      #chatLog .chat-react-details > summary {
+        list-style: none;
+        cursor: pointer;
+        font-size: 0.95rem;
+        color: var(--text-muted);
+        padding: 4px 0;
+        user-select: none;
+      }
+
+      #chatLog .chat-react-details > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      #chatLog .chat-react-details > summary:hover {
+        color: var(--text);
+      }
+
+      #chatLog .chat-react-details[open] > summary {
+        color: var(--accent);
+      }
+
+      #chatLog .chat-react-panel {
+        margin-top: 4px;
+        padding: 4px 0 0;
       }
 
       .chat-footer {
@@ -900,32 +939,20 @@
                 autocomplete="username"
               />
               <p class="pick-hint" id="pickHint" aria-live="polite">
-                Текст: #general · Голос: general
+                Канал: #general
               </p>
               <div class="discord-channels" id="discordChannels">
-                <div class="ch-cat" data-collapsed="false" data-cat="text">
+                <div class="ch-cat" data-collapsed="false" data-cat="channels">
                   <div class="ch-cat-toolbar">
                     <button type="button" class="ch-cat-head" aria-expanded="true">
                       <span class="ch-cat-chevron" aria-hidden="true">▼</span>
-                      <span class="ch-cat-title">Текстовые каналы</span>
+                      <span class="ch-cat-title">Каналы</span>
                     </button>
-                    <button type="button" class="ch-cat-add" data-add="text" title="Добавить текстовый канал">
+                    <button type="button" class="ch-cat-add" data-add="channel" title="Добавить канал">
                       +
                     </button>
                   </div>
-                  <ul class="ch-cat-list" id="textChannelList"></ul>
-                </div>
-                <div class="ch-cat" data-collapsed="false" data-cat="voice">
-                  <div class="ch-cat-toolbar">
-                    <button type="button" class="ch-cat-head" aria-expanded="true">
-                      <span class="ch-cat-chevron" aria-hidden="true">▼</span>
-                      <span class="ch-cat-title">Голосовые каналы</span>
-                    </button>
-                    <button type="button" class="ch-cat-add" data-add="voice" title="Добавить голосовой канал">
-                      +
-                    </button>
-                  </div>
-                  <ul class="ch-cat-list" id="voiceChannelList"></ul>
+                  <ul class="ch-cat-list" id="channelList"></ul>
                 </div>
               </div>
               <div class="row">
@@ -1017,8 +1044,8 @@
           <ul id="adminParticipantsList" class="admin-participant-list" aria-label="Список участников"></ul>
           <h3 class="modal-subtitle">Каналы</h3>
           <p class="modal-footnote" style="margin-top: 0">
-            Удаление: участники с канала переходят в <code>general</code>. Канал <code>general</code> удалить
-            нельзя.
+            Удаление: участники переходят в <code>general</code>. Переименование переносит историю чата.
+            Канал <code>general</code> нельзя удалить или переименовать.
           </p>
           <ul id="adminChannelsList" class="admin-participant-list" aria-label="Управление каналами"></ul>
           <button type="button" id="adminLogoutBtn" class="btn-text">Выйти из админки</button>
@@ -1028,6 +1055,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=39"></script>
+    <script src="./app.js?v=40"></script>
   </body>
 </html>

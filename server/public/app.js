@@ -8,11 +8,12 @@ const LS_TEXT_CHANNEL = "zalupa228_text_ch";
 const LS_VOICE_CHANNEL = "zalupa228_voice_ch";
 const LS_CUSTOM_TEXT = "zalupa228_custom_text_json";
 const LS_CUSTOM_VOICE = "zalupa228_custom_voice_json";
+const LS_CUSTOM_CHANNELS = "zalupa228_custom_channels_json";
 const LS_CHANNEL_LEGACY = "zalupa228_channel";
 const LS_THEME = "zalupa_theme";
 
-const DEFAULT_TEXT_SLUGS = ["general", "offtopic"];
-const DEFAULT_VOICE_SLUGS = ["general", "lobby"];
+/** Единый список каналов (чат + голос): дефолты с прежних текстовых/голосовых. */
+const DEFAULT_CHANNEL_SLUGS = ["general", "offtopic", "lobby"];
 const LS_PEER_AUDIO = "zalupa228_peer_audio";
 const LS_MIC_ENABLED = "zalupa228_mic_on";
 
@@ -35,7 +36,7 @@ function leaveRoom() {
   updatePickHint();
   setMobilePanel("room");
   if (lastChannelListPayload) {
-    renderChannelRoster(lastChannelListPayload);
+    renderChannelRoster(null);
   }
   if (chatLog) {
     chatLog.innerHTML = "";
@@ -112,8 +113,7 @@ function getCookie(name) {
 })();
 
 const nicknameInput = document.getElementById("nickname");
-const textChannelListEl = document.getElementById("textChannelList");
-const voiceChannelListEl = document.getElementById("voiceChannelList");
+const channelListEl = document.getElementById("channelList");
 const pickHintEl = document.getElementById("pickHint");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
@@ -203,6 +203,8 @@ let myVoiceChannel = "";
 let myChannel = "";
 let pendingJoinText = "general";
 let pendingJoinVoice = "general";
+let selectedSlug = "general";
+/** Совместимость со старым кодом: то же, что selectedSlug. */
 let selectedTextSlug = "general";
 let selectedVoiceSlug = "general";
 /** Последний payload channel-list с сервера (для перерисовки) */
@@ -246,11 +248,8 @@ function updateChatHeaderTitle() {
 
 function updatePickHint() {
   if (!pickHintEl) return;
-  if (joinedRoom) {
-    pickHintEl.textContent = `Текст: #${myTextChannel} · Голос: ${myVoiceChannel}`;
-  } else {
-    pickHintEl.textContent = `Текст: #${selectedTextSlug} · Голос: ${selectedVoiceSlug}`;
-  }
+  const ch = joinedRoom ? myChannel || myTextChannel : selectedSlug;
+  pickHintEl.textContent = `Канал: #${ch}`;
 }
 
 function readCustomSlugs(key) {
@@ -266,6 +265,54 @@ function readCustomSlugs(key) {
 function writeCustomSlugs(key, arr) {
   const u = [...new Set(arr.filter(Boolean))];
   localStorage.setItem(key, JSON.stringify(u));
+}
+
+function readCustomChannels() {
+  const fromNew = readCustomSlugs(LS_CUSTOM_CHANNELS);
+  if (fromNew.length > 0) {
+    return fromNew;
+  }
+  const legacy = new Set([
+    ...readCustomSlugs(LS_CUSTOM_TEXT),
+    ...readCustomSlugs(LS_CUSTOM_VOICE),
+  ]);
+  return Array.from(legacy);
+}
+
+function writeCustomChannelSlug(slug) {
+  const cur = readCustomChannels();
+  if (!cur.includes(slug)) {
+    cur.push(slug);
+    writeCustomSlugs(LS_CUSTOM_CHANNELS, cur);
+  }
+}
+
+function setSelectedSlug(slug) {
+  selectedSlug = slug;
+  selectedTextSlug = slug;
+  selectedVoiceSlug = slug;
+}
+
+function channelRowsFromPayload(p) {
+  if (!p || typeof p !== "object") {
+    return [];
+  }
+  if (Array.isArray(p.channels) && p.channels.length > 0) {
+    return mergeChannelRows(DEFAULT_CHANNEL_SLUGS, p.channels, readCustomChannels());
+  }
+  const legacyRows = [];
+  const seen = new Set();
+  const addRows = (arr) => {
+    for (const row of arr || []) {
+      if (row && row.name && !seen.has(row.name)) {
+        seen.add(row.name);
+        legacyRows.push(row);
+      }
+    }
+  };
+  addRows(p.textChannels);
+  addRows(p.voiceChannels);
+  return mergeChannelRows(DEFAULT_CHANNEL_SLUGS, legacyRows, readCustomChannels());
 }
 
 function mergeChannelRows(defaults, serverRows, customs) {
@@ -295,108 +342,58 @@ function renderChannelRoster(payload) {
     lastChannelListPayload = payload;
   }
   const p = lastChannelListPayload;
-  if (!p) return;
-
-  const legacyText = Array.isArray(p.channels)
-    ? p.channels.map((c) => ({ name: c.name, online: c.online }))
-    : null;
-  const textRows = mergeChannelRows(
-    DEFAULT_TEXT_SLUGS,
-    p.textChannels || legacyText,
-    readCustomSlugs(LS_CUSTOM_TEXT)
-  );
-  const voiceRows = mergeChannelRows(
-    DEFAULT_VOICE_SLUGS,
-    p.voiceChannels || [],
-    readCustomSlugs(LS_CUSTOM_VOICE)
-  );
-
-  if (textChannelListEl) {
-    textChannelListEl.innerHTML = "";
-    for (const row of textRows) {
-      const active = joinedRoom ? myTextChannel === row.name : selectedTextSlug === row.name;
-      const li = document.createElement("li");
-      li.className = "ch-item" + (active ? " selected" : "");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "ch-item-btn";
-      const hash = document.createElement("span");
-      hash.className = "ch-hash";
-      hash.textContent = "#";
-      const label = document.createElement("span");
-      label.textContent = row.name;
-      const meta = document.createElement("span");
-      meta.className = "ch-voice-meta";
-      meta.textContent = row.online > 0 ? String(row.online) : "";
-      btn.appendChild(hash);
-      btn.appendChild(label);
-      btn.appendChild(meta);
-      btn.addEventListener("click", () => {
-        if (joinedRoom) {
-          if (row.name === myTextChannel) {
-            return;
-          }
-          setStatus("Смена текстового канала…");
-          sendSwitchChannels(row.name, myVoiceChannel);
-          return;
-        }
-        selectedTextSlug = row.name;
-        localStorage.setItem(LS_TEXT_CHANNEL, row.name);
-        updatePickHint();
-        renderChannelRoster(null);
-      });
-      li.appendChild(btn);
-      textChannelListEl.appendChild(li);
-    }
+  if (!p || !channelListEl) {
+    return;
   }
 
-  if (voiceChannelListEl) {
-    voiceChannelListEl.innerHTML = "";
-    for (const row of voiceRows) {
-      const members = Array.isArray(row.members) ? row.members : [];
-      const active = joinedRoom ? myVoiceChannel === row.name : selectedVoiceSlug === row.name;
-      const li = document.createElement("li");
-      li.className = "ch-item ch-item-voice" + (active ? " active" : "");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "ch-item-btn";
-      const sp = document.createElement("span");
-      sp.className = "ch-speaker";
-      sp.textContent = "🔊";
-      sp.setAttribute("aria-hidden", "true");
-      const label = document.createElement("span");
-      label.textContent = row.name;
-      const meta = document.createElement("span");
-      meta.className = "ch-voice-meta";
-      meta.textContent = members.length > 0 ? String(members.length) : "";
-      btn.appendChild(sp);
-      btn.appendChild(label);
-      btn.appendChild(meta);
-      btn.addEventListener("click", () => {
-        if (joinedRoom) {
-          if (row.name === myVoiceChannel) {
-            return;
-          }
-          setStatus("Смена голосового канала…");
-          sendSwitchChannels(myTextChannel, row.name);
+  const rows = channelRowsFromPayload(p);
+  channelListEl.innerHTML = "";
+
+  for (const row of rows) {
+    const members = Array.isArray(row.members) ? row.members : [];
+    const active = joinedRoom ? myChannel === row.name : selectedSlug === row.name;
+    const li = document.createElement("li");
+    li.className = "ch-item ch-item-voice" + (active ? " active selected" : "");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ch-item-btn";
+    const hash = document.createElement("span");
+    hash.className = "ch-hash";
+    hash.textContent = "#";
+    const label = document.createElement("span");
+    label.textContent = row.name;
+    const meta = document.createElement("span");
+    meta.className = "ch-voice-meta";
+    const n = members.length || row.online || 0;
+    meta.textContent = n > 0 ? String(n) : "";
+    btn.appendChild(hash);
+    btn.appendChild(label);
+    btn.appendChild(meta);
+    btn.addEventListener("click", () => {
+      if (joinedRoom) {
+        if (row.name === myChannel) {
           return;
         }
-        selectedVoiceSlug = row.name;
-        localStorage.setItem(LS_VOICE_CHANNEL, row.name);
-        updatePickHint();
-        renderChannelRoster(null);
-      });
-      li.appendChild(btn);
-      const sub = document.createElement("ul");
-      sub.className = "ch-voice-members";
-      for (const m of members) {
-        const liM = document.createElement("li");
-        liM.textContent = m;
-        sub.appendChild(liM);
+        setStatus("Смена канала…");
+        sendSwitchChannels(row.name);
+        return;
       }
-      li.appendChild(sub);
-      voiceChannelListEl.appendChild(li);
+      setSelectedSlug(row.name);
+      localStorage.setItem(LS_TEXT_CHANNEL, row.name);
+      localStorage.setItem(LS_VOICE_CHANNEL, row.name);
+      updatePickHint();
+      renderChannelRoster(null);
+    });
+    li.appendChild(btn);
+    const sub = document.createElement("ul");
+    sub.className = "ch-voice-members";
+    for (const m of members) {
+      const liM = document.createElement("li");
+      liM.textContent = m;
+      sub.appendChild(liM);
     }
+    li.appendChild(sub);
+    channelListEl.appendChild(li);
   }
 }
 
@@ -552,6 +549,14 @@ function appendReactionBar(line, reactions) {
   if (!id || serverChatMessageOps === false) {
     return;
   }
+  const details = document.createElement("details");
+  details.className = "chat-react-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "⋯";
+  summary.title = "Реакции";
+  summary.setAttribute("aria-label", "Реакции");
+  const panel = document.createElement("div");
+  panel.className = "chat-react-panel";
   const bar = document.createElement("div");
   bar.className = "chat-reaction-bar";
   for (const em of CHAT_QUICK_REACTIONS) {
@@ -568,7 +573,10 @@ function appendReactionBar(line, reactions) {
     });
     bar.appendChild(btn);
   }
-  line.appendChild(bar);
+  panel.appendChild(bar);
+  details.appendChild(summary);
+  details.appendChild(panel);
+  line.appendChild(details);
   syncReactionBarState(bar, reactions);
 }
 
@@ -603,7 +611,7 @@ function applyChatMessageReactions(id, reactions) {
   if (!line) {
     return;
   }
-  const bar = line.querySelector(".chat-reaction-bar");
+  const bar = line.querySelector(".chat-react-panel .chat-reaction-bar");
   if (bar) {
     syncReactionBarState(bar, reactions);
   }
@@ -1190,13 +1198,11 @@ function normalizeAdminPeerEntry(entry) {
   }
   if (entry && typeof entry === "object") {
     const nickname = String(entry.nickname || "").trim();
-    const textChannel = entry.textChannel != null ? String(entry.textChannel) : "";
-    const voiceChannel = entry.voiceChannel != null ? String(entry.voiceChannel) : "";
     const ch =
-      textChannel || voiceChannel
-        ? `${textChannel ? `#${textChannel}` : "—"} / ${voiceChannel || "—"}`
-        : "";
-    const display = ch ? `${nickname} — ${ch}` : nickname;
+      entry.channel != null
+        ? String(entry.channel)
+        : String(entry.textChannel || entry.voiceChannel || "");
+    const display = ch ? `${nickname} — #${ch}` : nickname;
     return { nickname, display };
   }
   return { nickname: "", display: "" };
@@ -1271,17 +1277,36 @@ function requestKickParticipant(targetNick) {
   socket.send(JSON.stringify({ type: "admin-kick", target: targetNick, secret: cachedAdminSecret }));
 }
 
-function removeCustomSlugFromStorage(kind, rawName) {
+function removeChannelFromCustomStorage(rawName) {
   const slug = String(rawName || "")
     .trim()
     .toLowerCase();
   if (!slug) {
     return;
   }
-  const key = kind === "text" ? LS_CUSTOM_TEXT : LS_CUSTOM_VOICE;
-  const cur = readCustomSlugs(key);
-  const next = cur.filter((s) => s !== slug);
-  if (next.length !== cur.length) {
+  for (const key of [LS_CUSTOM_CHANNELS, LS_CUSTOM_TEXT, LS_CUSTOM_VOICE]) {
+    const cur = readCustomSlugs(key);
+    const next = cur.filter((s) => s !== slug);
+    if (next.length !== cur.length) {
+      writeCustomSlugs(key, next);
+    }
+  }
+}
+
+function renameChannelInCustomStorage(oldRaw, newRaw) {
+  const oldS = String(oldRaw || "")
+    .trim()
+    .toLowerCase();
+  const newS = String(newRaw || "")
+    .trim()
+    .toLowerCase();
+  if (!oldS || !newS || oldS === newS) {
+    return;
+  }
+  for (const key of [LS_CUSTOM_CHANNELS, LS_CUSTOM_TEXT, LS_CUSTOM_VOICE]) {
+    const cur = readCustomSlugs(key);
+    let next = cur.map((s) => (s === oldS ? newS : s));
+    next = [...new Set(next)];
     writeCustomSlugs(key, next);
   }
 }
@@ -1303,80 +1328,47 @@ function renderAdminChannelsPanel() {
     adminChannelsList.appendChild(li);
     return;
   }
-  const legacyText = Array.isArray(p.channels)
-    ? p.channels.map((c) => ({ name: c.name, online: c.online }))
-    : null;
-  const textRows = mergeChannelRows(
-    DEFAULT_TEXT_SLUGS,
-    p.textChannels || legacyText,
-    readCustomSlugs(LS_CUSTOM_TEXT)
-  );
-  const voiceRows = mergeChannelRows(
-    DEFAULT_VOICE_SLUGS,
-    p.voiceChannels || [],
-    readCustomSlugs(LS_CUSTOM_VOICE)
-  );
 
-  const addHint = (text) => {
-    const li = document.createElement("li");
-    li.className = "admin-participant-hint";
-    li.textContent = text;
-    adminChannelsList.appendChild(li);
-  };
+  const rows = channelRowsFromPayload(p);
 
-  addHint("Текстовые");
-  for (const row of textRows) {
+  for (const row of rows) {
     const li = document.createElement("li");
-    li.className = "admin-participant-row";
+    li.className = "admin-participant-row admin-channel-row";
     const span = document.createElement("span");
     span.className = "admin-participant-name";
     span.textContent = `#${row.name}`;
     li.appendChild(span);
     if (row.name !== "general") {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn-kick";
-      btn.textContent = "Удалить";
-      btn.setAttribute("aria-label", `Удалить текстовый канал ${row.name}`);
-      btn.addEventListener("click", () => {
-        requestAdminRemoveChannel("text", row.name);
+      const renameBtn = document.createElement("button");
+      renameBtn.type = "button";
+      renameBtn.className = "btn-text";
+      renameBtn.textContent = "Имя…";
+      renameBtn.setAttribute("aria-label", `Переименовать канал ${row.name}`);
+      renameBtn.addEventListener("click", () => {
+        requestAdminRenameChannel(row.name);
       });
-      li.appendChild(btn);
-    }
-    adminChannelsList.appendChild(li);
-  }
-
-  addHint("Голосовые");
-  for (const row of voiceRows) {
-    const li = document.createElement("li");
-    li.className = "admin-participant-row";
-    const span = document.createElement("span");
-    span.className = "admin-participant-name";
-    span.textContent = `🔊 ${row.name}`;
-    li.appendChild(span);
-    if (row.name !== "general") {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn-kick";
-      btn.textContent = "Удалить";
-      btn.setAttribute("aria-label", `Удалить голосовой канал ${row.name}`);
-      btn.addEventListener("click", () => {
-        requestAdminRemoveChannel("voice", row.name);
+      li.appendChild(renameBtn);
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "btn-kick";
+      delBtn.textContent = "Удалить";
+      delBtn.setAttribute("aria-label", `Удалить канал ${row.name}`);
+      delBtn.addEventListener("click", () => {
+        requestAdminRemoveChannel(row.name);
       });
-      li.appendChild(btn);
+      li.appendChild(delBtn);
     }
     adminChannelsList.appendChild(li);
   }
 }
 
-function requestAdminRemoveChannel(kind, name) {
+function requestAdminRemoveChannel(name) {
   if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
     return;
   }
-  const label = kind === "text" ? `#${name}` : `🔊 ${name}`;
   if (
     !window.confirm(
-      `Удалить канал ${label}? Все участники на нём будут перенесены в general.`
+      `Удалить канал #${name}? Участники перейдут в general, история чата канала останется в БД.`
     )
   ) {
     return;
@@ -1384,8 +1376,33 @@ function requestAdminRemoveChannel(kind, name) {
   socket.send(
     JSON.stringify({
       type: "admin-channel-remove",
-      kind,
       name,
+      secret: cachedAdminSecret,
+    })
+  );
+}
+
+function requestAdminRenameChannel(oldName) {
+  if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  const raw = window.prompt(`Новое имя канала (вместо #${oldName}):`, oldName);
+  if (raw == null) {
+    return;
+  }
+  const newName = normalizeChannelForJoin(raw);
+  if (!newName) {
+    setStatus("Недопустимое имя канала.");
+    return;
+  }
+  if (newName === oldName) {
+    return;
+  }
+  socket.send(
+    JSON.stringify({
+      type: "admin-channel-rename",
+      oldName,
+      newName,
       secret: cachedAdminSecret,
     })
   );
@@ -1500,48 +1517,48 @@ function removePeer(peerNickname) {
   renderParticipants();
 }
 
-function sendSwitchChannels(nextText, nextVoice) {
+function sendSwitchChannels(nextChannel) {
   if (!socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
     return;
   }
   socket.send(
     JSON.stringify({
       type: "switch-channels",
-      textChannel: nextText,
-      voiceChannel: nextVoice,
+      channel: nextChannel,
     })
   );
 }
 
 function applyChannelsSwitched(message) {
-  const nextT = message.textChannel || message.channel || myTextChannel;
-  const nextV = message.voiceChannel || myVoiceChannel;
-  const textChanged = message.textChannelChanged === true;
-  const voiceChanged = message.voiceChannelChanged === true;
+  const next = message.channel || message.textChannel || myChannel;
+  const roomChanged =
+    message.channelChanged === true ||
+    message.textChannelChanged === true ||
+    message.voiceChannelChanged === true;
 
-  myTextChannel = nextT;
-  myVoiceChannel = nextV;
-  myChannel = myTextChannel;
-  localStorage.setItem(LS_TEXT_CHANNEL, myTextChannel);
-  localStorage.setItem(LS_VOICE_CHANNEL, myVoiceChannel);
-  sessionStorage.setItem(SS_TEXT_CHANNEL, myTextChannel);
-  sessionStorage.setItem(SS_VOICE_CHANNEL, myVoiceChannel);
+  myChannel = next;
+  myTextChannel = next;
+  myVoiceChannel = next;
+  localStorage.setItem(LS_TEXT_CHANNEL, myChannel);
+  localStorage.setItem(LS_VOICE_CHANNEL, myChannel);
+  sessionStorage.setItem(SS_TEXT_CHANNEL, myChannel);
+  sessionStorage.setItem(SS_VOICE_CHANNEL, myChannel);
   updateChatHeaderTitle();
   updatePickHint();
   if (lastChannelListPayload) {
     renderChannelRoster(null);
   }
 
-  if (textChanged) {
+  if (roomChanged) {
     renderChatHistory([]);
   }
 
-  let statusLine = `В сети как ${myNickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`;
+  let statusLine = `В сети как ${myNickname} · #${myChannel}`;
   if (serverChatMessageOps === false) {
     statusLine += ". Сервер устарел: нет правок чата — обновите backend.";
   }
 
-  if (voiceChanged) {
+  if (roomChanged) {
     enqueueRtc(async () => {
       for (const peerNickname of Array.from(peers.keys())) {
         removePeer(peerNickname);
@@ -1613,8 +1630,7 @@ function connectSocket() {
       JSON.stringify({
         type: "join",
         nickname: myNickname,
-        textChannel: pendingJoinText,
-        voiceChannel: pendingJoinVoice,
+        channel: pendingJoinText,
       })
     );
   };
@@ -1643,7 +1659,7 @@ function connectSocket() {
     switch (message.type) {
       case "hello":
         serverChatMessageOps = message.chatMessageOps === true;
-        document.querySelectorAll(".chat-reaction-bar").forEach((el) => {
+        document.querySelectorAll(".chat-react-details").forEach((el) => {
           el.hidden = serverChatMessageOps === false;
         });
         if (joinedRoom && serverChatMessageOps === false) {
@@ -1661,22 +1677,34 @@ function connectSocket() {
         await rtcChain;
         break;
       case "channel-removed": {
-        const rk = String(message.kind || "").toLowerCase();
-        if (rk === "text" || rk === "voice") {
-          removeCustomSlugFromStorage(rk, message.name);
-        }
+        removeChannelFromCustomStorage(message.name);
         const removedSlug = String(message.name || "")
           .trim()
           .toLowerCase();
-        if (!joinedRoom && removedSlug) {
-          if (rk === "text" && selectedTextSlug === removedSlug) {
-            selectedTextSlug = "general";
-            localStorage.setItem(LS_TEXT_CHANNEL, "general");
-          }
-          if (rk === "voice" && selectedVoiceSlug === removedSlug) {
-            selectedVoiceSlug = "general";
-            localStorage.setItem(LS_VOICE_CHANNEL, "general");
-          }
+        if (!joinedRoom && removedSlug && selectedSlug === removedSlug) {
+          setSelectedSlug("general");
+          localStorage.setItem(LS_TEXT_CHANNEL, "general");
+          localStorage.setItem(LS_VOICE_CHANNEL, "general");
+          updatePickHint();
+        }
+        if (lastChannelListPayload) {
+          renderChannelRoster(null);
+        }
+        renderAdminChannelsPanel();
+        break;
+      }
+      case "channel-renamed": {
+        renameChannelInCustomStorage(message.oldName, message.newName);
+        const o = String(message.oldName || "")
+          .trim()
+          .toLowerCase();
+        const n = String(message.newName || "")
+          .trim()
+          .toLowerCase();
+        if (!joinedRoom && o && selectedSlug === o) {
+          setSelectedSlug(n || "general");
+          localStorage.setItem(LS_TEXT_CHANNEL, n || "general");
+          localStorage.setItem(LS_VOICE_CHANNEL, n || "general");
           updatePickHint();
         }
         if (lastChannelListPayload) {
@@ -1689,15 +1717,15 @@ function connectSocket() {
         joinBtn.disabled = true;
         nicknameInput.disabled = true;
         nicknameInput.value = message.nickname;
-        myTextChannel = message.textChannel || message.channel || pendingJoinText;
-        myVoiceChannel = message.voiceChannel || pendingJoinVoice;
-        myChannel = myTextChannel;
+        myChannel = message.channel || message.textChannel || pendingJoinText;
+        myTextChannel = myChannel;
+        myVoiceChannel = myChannel;
         joinedRoom = true;
         myNickname = message.nickname;
-        localStorage.setItem(LS_TEXT_CHANNEL, myTextChannel);
-        localStorage.setItem(LS_VOICE_CHANNEL, myVoiceChannel);
-        sessionStorage.setItem(SS_TEXT_CHANNEL, myTextChannel);
-        sessionStorage.setItem(SS_VOICE_CHANNEL, myVoiceChannel);
+        localStorage.setItem(LS_TEXT_CHANNEL, myChannel);
+        localStorage.setItem(LS_VOICE_CHANNEL, myChannel);
+        sessionStorage.setItem(SS_TEXT_CHANNEL, myChannel);
+        sessionStorage.setItem(SS_VOICE_CHANNEL, myChannel);
         updateChatHeaderTitle();
         updatePickHint();
         if (lastChannelListPayload) {
@@ -1715,7 +1743,7 @@ function connectSocket() {
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
           {
-            let st = `В сети как ${message.nickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`;
+            let st = `В сети как ${message.nickname} · #${myChannel}`;
             if (serverChatMessageOps === false) {
               st +=
                 ". Сервер устарел: нет правок чата — обновите backend.";
@@ -2031,18 +2059,17 @@ async function join(options = {}) {
     return;
   }
 
-  const textOk = normalizeChannelForJoin(selectedTextSlug);
-  const voiceOk = normalizeChannelForJoin(selectedVoiceSlug);
-  if (!textOk || !voiceOk) {
+  const chOk = normalizeChannelForJoin(selectedSlug);
+  if (!chOk) {
     setStatus(
       "Каналы: только латиница, цифры, дефис и подчёркивание, до 32 символов. Пустое = general."
     );
     return;
   }
-  pendingJoinText = textOk;
-  pendingJoinVoice = voiceOk;
-  localStorage.setItem(LS_TEXT_CHANNEL, textOk);
-  localStorage.setItem(LS_VOICE_CHANNEL, voiceOk);
+  pendingJoinText = chOk;
+  pendingJoinVoice = chOk;
+  localStorage.setItem(LS_TEXT_CHANNEL, chOk);
+  localStorage.setItem(LS_VOICE_CHANNEL, chOk);
 
   if (joinedRoom) {
     setStatus("Вы уже в комнате.");
@@ -2188,13 +2215,12 @@ if (chatImageBtn && chatImageInput) {
   }
   const tx = localStorage.getItem(LS_TEXT_CHANNEL);
   const vo = localStorage.getItem(LS_VOICE_CHANNEL);
-  if (tx) {
-    const n = normalizeChannelForJoin(tx);
-    if (n) selectedTextSlug = n;
-  }
-  if (vo) {
-    const n = normalizeChannelForJoin(vo);
-    if (n) selectedVoiceSlug = n;
+  const pick = tx || vo;
+  if (pick) {
+    const n = normalizeChannelForJoin(pick);
+    if (n) {
+      setSelectedSlug(n);
+    }
   }
   updatePickHint();
 })();
@@ -2212,30 +2238,16 @@ if (chatImageBtn && chatImageInput) {
   document.querySelectorAll(".ch-cat-add").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const kind = btn.getAttribute("data-add");
-      const raw = window.prompt(
-        kind === "voice"
-          ? "Имя голосового канала (латиница, цифры, -, _):"
-          : "Имя текстового канала (латиница, цифры, -, _):"
-      );
+      const raw = window.prompt("Имя канала (латиница, цифры, -, _):");
       const slug = normalizeChannelForJoin(raw || "");
       if (!slug) {
         setStatus("Неверное имя канала.");
         return;
       }
-      const key = kind === "voice" ? LS_CUSTOM_VOICE : LS_CUSTOM_TEXT;
-      const cur = readCustomSlugs(key);
-      if (!cur.includes(slug)) {
-        cur.push(slug);
-        writeCustomSlugs(key, cur);
-      }
-      if (kind === "voice") {
-        selectedVoiceSlug = slug;
-        localStorage.setItem(LS_VOICE_CHANNEL, slug);
-      } else {
-        selectedTextSlug = slug;
-        localStorage.setItem(LS_TEXT_CHANNEL, slug);
-      }
+      writeCustomChannelSlug(slug);
+      setSelectedSlug(slug);
+      localStorage.setItem(LS_TEXT_CHANNEL, slug);
+      localStorage.setItem(LS_VOICE_CHANNEL, slug);
       updatePickHint();
       renderChannelRoster(null);
     });
@@ -2249,7 +2261,7 @@ if (chatImageBtn && chatImageInput) {
   if (tc) tc.addEventListener("click", () => setMobilePanel("chat"));
 })();
 
-renderChannelRoster({ textChannels: [], voiceChannels: [] });
+renderChannelRoster({ channels: [] });
 
 (function trySessionRejoin() {
   if (sessionStorage.getItem(SS_JOINED) !== "1") {
@@ -2264,21 +2276,19 @@ renderChannelRoster({ textChannels: [], voiceChannels: [] });
   }
   const tx = sessionStorage.getItem(SS_TEXT_CHANNEL);
   const vo = sessionStorage.getItem(SS_VOICE_CHANNEL);
-  if (tx) {
-    const n = normalizeChannelForJoin(tx);
-    if (n) selectedTextSlug = n;
+  const pick = tx || vo;
+  if (pick) {
+    const n = normalizeChannelForJoin(pick);
+    if (n) {
+      setSelectedSlug(n);
+    }
   }
-  if (vo) {
-    const n = normalizeChannelForJoin(vo);
-    if (n) selectedVoiceSlug = n;
-  }
-  if (!tx && !vo) {
+  if (!pick) {
     const leg = sessionStorage.getItem("zalupa_vc_channel");
     if (leg) {
       const n = normalizeChannelForJoin(leg);
       if (n) {
-        selectedTextSlug = n;
-        selectedVoiceSlug = n;
+        setSelectedSlug(n);
       }
     }
   }
