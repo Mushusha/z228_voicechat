@@ -48,12 +48,19 @@
         font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
         background: var(--bg);
         color: var(--text);
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+          env(safe-area-inset-left);
       }
 
       .app {
         display: flex;
         height: 100vh;
+        height: 100dvh;
         min-height: 0;
+      }
+
+      .mobile-tabs {
+        display: none;
       }
 
       .sidebar {
@@ -385,11 +392,111 @@
       .nick-field {
         width: 100%;
       }
+
+      .channel-field {
+        width: 100%;
+      }
+
+      .channel-hint {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        margin: -4px 0 0;
+        line-height: 1.35;
+      }
+
+      @media (max-width: 720px) {
+        .mobile-tabs {
+          display: flex;
+          flex-shrink: 0;
+          border-bottom: 1px solid var(--border);
+          background: var(--surface);
+          padding: 6px 8px;
+          gap: 8px;
+        }
+
+        .mobile-tabs button {
+          flex: 1;
+          padding: 12px 10px;
+          font-size: 0.9rem;
+          min-height: 44px;
+          border-radius: 8px;
+        }
+
+        .mobile-tabs button[aria-selected="true"] {
+          background: var(--accent-dim);
+          border-color: var(--accent);
+          font-weight: 600;
+        }
+
+        .app {
+          flex-direction: column;
+        }
+
+        .sidebar {
+          width: 100%;
+          flex: 1;
+          min-height: 0;
+          border-right: none;
+          border-bottom: none;
+        }
+
+        .brand {
+          padding: 12px 14px;
+        }
+
+        .brand .logo {
+          width: 56px;
+          height: 56px;
+          border-radius: 14px;
+        }
+
+        .chat-main {
+          flex: 1;
+          min-height: 0;
+        }
+
+        body[data-mobile-panel="room"] .chat-main {
+          display: none !important;
+        }
+
+        body[data-mobile-panel="chat"] .sidebar {
+          display: none !important;
+        }
+
+        .chat-footer {
+          padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+          gap: 8px;
+        }
+
+        .chat-footer button {
+          min-height: 44px;
+          padding: 10px 12px;
+          flex-shrink: 0;
+        }
+
+        .chat-header {
+          padding: 12px 14px;
+          padding-left: max(14px, env(safe-area-inset-left));
+          padding-right: max(14px, env(safe-area-inset-right));
+        }
+
+        #chatLog {
+          padding: 12px 14px;
+        }
+      }
     </style>
   </head>
-  <body data-https-port="3443">
+  <body data-https-port="3443" data-mobile-panel="room">
     <div class="app">
-      <aside class="sidebar">
+      <div class="mobile-tabs" role="tablist" aria-label="Разделы">
+        <button type="button" id="tabRoomBtn" role="tab" aria-selected="true" aria-controls="roomPanel">
+          Комната
+        </button>
+        <button type="button" id="tabChatBtn" role="tab" aria-selected="false" aria-controls="chatPanel">
+          Чат
+        </button>
+      </div>
+      <aside class="sidebar" id="roomPanel" role="tabpanel" aria-labelledby="tabRoomBtn">
         <header class="brand">
           <img class="logo" src="./logo.png" width="88" height="88" alt="zalupa228" />
           <div class="brand-text">
@@ -409,6 +516,17 @@
                 maxlength="30"
                 autocomplete="username"
               />
+              <label class="section-title" for="channelInput">Канал</label>
+              <input
+                id="channelInput"
+                class="channel-field"
+                type="text"
+                placeholder="general"
+                maxlength="32"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <p class="channel-hint">Латиница, цифры, дефис и подчёркивание; пусто = general</p>
               <div class="row">
                 <button id="joinBtn" type="button" class="btn-primary">Войти</button>
                 <button id="leaveBtn" type="button" disabled>Выйти</button>
@@ -439,8 +557,8 @@
           </div>
         </div>
       </aside>
-      <main class="chat-main">
-        <div class="chat-header">Чат</div>
+      <main class="chat-main" id="chatPanel" role="tabpanel" aria-labelledby="tabChatBtn">
+        <div class="chat-header" id="chatHeaderTitle">Чат</div>
         <div id="chatLog" aria-live="polite" tabindex="0" title="Кликните здесь и вставьте фото (Ctrl+V)"></div>
         <footer class="chat-footer">
           <input id="chatImageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
@@ -452,6 +570,6 @@
         </footer>
       </main>
     </div>
-    <script src="./app.js?v=15"></script>
+    <script src="./app.js?v=16"></script>
   </body>
 </html>

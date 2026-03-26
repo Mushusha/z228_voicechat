@@ -2,6 +2,8 @@ const NICK_COOKIE = "zalupa228_nick";
 const NICK_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
 const SS_JOINED = "zalupa_vc_joined";
 const SS_NICK = "zalupa_vc_nick";
+const SS_CHANNEL = "zalupa_vc_channel";
+const LS_CHANNEL = "zalupa228_channel";
 const LS_THEME = "zalupa_theme";
 const LS_PEER_AUDIO = "zalupa228_peer_audio";
 const LS_MIC_ENABLED = "zalupa228_mic_on";
@@ -9,6 +11,7 @@ const LS_MIC_ENABLED = "zalupa228_mic_on";
 function clearRejoinHint() {
   sessionStorage.removeItem(SS_JOINED);
   sessionStorage.removeItem(SS_NICK);
+  sessionStorage.removeItem(SS_CHANNEL);
 }
 
 function leaveRoom() {
@@ -16,6 +19,12 @@ function leaveRoom() {
   forceDisconnectClient();
   joinBtn.disabled = false;
   nicknameInput.disabled = false;
+  if (channelInput) {
+    channelInput.disabled = false;
+  }
+  myChannel = "";
+  updateChatHeaderTitle();
+  setMobilePanel("room");
   if (chatLog) {
     chatLog.innerHTML = "";
   }
@@ -88,6 +97,7 @@ function getCookie(name) {
 })();
 
 const nicknameInput = document.getElementById("nickname");
+const channelInput = document.getElementById("channelInput");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const micBtn = document.getElementById("micBtn");
@@ -152,11 +162,39 @@ async function flushPendingIce(peerNickname) {
 }
 
 let myNickname = null;
+/** Текущий канал на сервере после join; пустая строка — не в комнате */
+let myChannel = "";
+let pendingJoinChannel = "general";
 let socket = null;
 let localStream = null;
 let micEnabled = true;
 let joinedRoom = false;
 let rtcChain = Promise.resolve();
+
+function normalizeChannelForJoin(raw) {
+  let s = String(raw ?? "").trim().toLowerCase();
+  if (!s) s = "general";
+  if (s.length > 32 || !/^[a-z0-9_-]+$/.test(s)) return null;
+  return s;
+}
+
+function setMobilePanel(which) {
+  document.body.dataset.mobilePanel = which;
+  const tr = document.getElementById("tabRoomBtn");
+  const tc = document.getElementById("tabChatBtn");
+  if (tr) tr.setAttribute("aria-selected", which === "room" ? "true" : "false");
+  if (tc) tc.setAttribute("aria-selected", which === "chat" ? "true" : "false");
+}
+
+function updateChatHeaderTitle() {
+  const el = document.getElementById("chatHeaderTitle");
+  if (!el) return;
+  if (myChannel) {
+    el.textContent = `Чат · канал: ${myChannel}`;
+  } else {
+    el.textContent = "Чат";
+  }
+}
 
 function enqueueRtc(fn) {
   rtcChain = rtcChain.then(fn).catch((e) => console.error("WebRTC queue:", e));
@@ -866,6 +904,9 @@ function connectSocket() {
       } catch (_) {}
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
+      if (channelInput) {
+        channelInput.disabled = false;
+      }
       if (localStream) {
         localStream.getTracks().forEach((t) => t.stop());
         localStream = null;
@@ -878,6 +919,7 @@ function connectSocket() {
       JSON.stringify({
         type: "join",
         nickname: myNickname,
+        channel: pendingJoinChannel,
       })
     );
   };
@@ -888,6 +930,9 @@ function connectSocket() {
       setStatus("Ошибка WebSocket — проверьте сервер и URL.");
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
+      if (channelInput) {
+        channelInput.disabled = false;
+      }
       if (leaveBtn) {
         leaveBtn.disabled = true;
       }
@@ -908,6 +953,17 @@ function connectSocket() {
         joinBtn.disabled = true;
         nicknameInput.disabled = true;
         nicknameInput.value = message.nickname;
+        myChannel = message.channel || pendingJoinChannel;
+        if (channelInput) {
+          channelInput.value = myChannel;
+          channelInput.disabled = true;
+        }
+        localStorage.setItem(LS_CHANNEL, myChannel);
+        sessionStorage.setItem(SS_CHANNEL, myChannel);
+        updateChatHeaderTitle();
+        if (window.matchMedia && window.matchMedia("(max-width: 720px)").matches) {
+          setMobilePanel("chat");
+        }
         if (leaveBtn) {
           leaveBtn.disabled = false;
         }
@@ -917,7 +973,7 @@ function connectSocket() {
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
-          setStatus(`В сети как ${message.nickname}`);
+          setStatus(`В сети как ${message.nickname} · ${myChannel}`);
           micBtn.disabled = false;
           setChatEnabled(true);
           for (const peerNickname of message.peers) {
@@ -940,9 +996,14 @@ function connectSocket() {
         break;
       case "join-rejected":
         joinedRoom = false;
+        myChannel = "";
+        updateChatHeaderTitle();
         setStatus(`Вход отклонён: ${message.reason}`);
         joinBtn.disabled = false;
         nicknameInput.disabled = false;
+        if (channelInput) {
+          channelInput.disabled = false;
+        }
         setChatEnabled(false);
         if (leaveBtn) {
           leaveBtn.disabled = true;
@@ -986,6 +1047,11 @@ function connectSocket() {
       setChatEnabled(false);
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
+      if (channelInput) {
+        channelInput.disabled = false;
+      }
+      myChannel = "";
+      updateChatHeaderTitle();
       if (leaveBtn) {
         leaveBtn.disabled = true;
       }
@@ -1024,6 +1090,16 @@ async function join(options = {}) {
     setStatus("Нужен ник.");
     return;
   }
+
+  const channelOk = normalizeChannelForJoin(channelInput ? channelInput.value : "");
+  if (!channelOk) {
+    setStatus(
+      "Канал: только латиница, цифры, дефис и подчёркивание, до 32 символов. Пустое поле = general."
+    );
+    return;
+  }
+  pendingJoinChannel = channelOk;
+  localStorage.setItem(LS_CHANNEL, pendingJoinChannel);
 
   if (joinedRoom) {
     setStatus("Вы уже в комнате.");
@@ -1154,6 +1230,17 @@ if (chatImageBtn && chatImageInput) {
   if (c && nicknameInput && !nicknameInput.value.trim()) {
     nicknameInput.value = c;
   }
+  const ch = localStorage.getItem(LS_CHANNEL);
+  if (ch && channelInput) {
+    channelInput.value = ch;
+  }
+})();
+
+(function initMobileTabs() {
+  const tr = document.getElementById("tabRoomBtn");
+  const tc = document.getElementById("tabChatBtn");
+  if (tr) tr.addEventListener("click", () => setMobilePanel("room"));
+  if (tc) tc.addEventListener("click", () => setMobilePanel("chat"));
 })();
 
 (function trySessionRejoin() {
@@ -1166,6 +1253,10 @@ if (chatImageBtn && chatImageInput) {
   }
   if (nicknameInput) {
     nicknameInput.value = nick;
+  }
+  const ch = sessionStorage.getItem(SS_CHANNEL);
+  if (ch && channelInput) {
+    channelInput.value = ch;
   }
   setTimeout(() => {
     void join({ fromAutoRejoin: true });

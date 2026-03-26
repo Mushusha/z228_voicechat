@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const chatMessageSchema = new mongoose.Schema(
   {
+    channel: { type: String, maxlength: 32, default: "general" },
     nickname: { type: String, required: true, maxlength: 30 },
     text: { type: String, maxlength: 500, default: "" },
     imageMime: { type: String, maxlength: 40 },
@@ -10,6 +11,7 @@ const chatMessageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+chatMessageSchema.index({ channel: 1, createdAt: -1 });
 chatMessageSchema.index({ createdAt: 1 });
 
 module.exports = mongoose.model("ChatMessage", chatMessageSchema);

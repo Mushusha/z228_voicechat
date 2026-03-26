@@ -32,17 +32,54 @@ app.use(
   })
 );
 
+const DEFAULT_CHANNEL = "general";
+const CHANNEL_MAX_LEN = 32;
+
+function normalizeChannelInput(raw) {
+  let s = String(raw ?? "").trim().toLowerCase();
+  if (!s) {
+    s = DEFAULT_CHANNEL;
+  }
+  if (s.length > CHANNEL_MAX_LEN) {
+    return { ok: false, reason: `Канал не длиннее ${CHANNEL_MAX_LEN} символов.` };
+  }
+  if (!/^[a-z0-9_-]+$/.test(s)) {
+    return {
+      ok: false,
+      reason: "Недопустимый канал: только латиница, цифры, дефис и подчёркивание.",
+    };
+  }
+  return { ok: true, channel: s };
+}
+
+/** ws → { nickname, channel } */
 const clientsBySocket = new Map();
-const socketsByNickname = new Map();
+/** channel → Map(nickname → ws) */
+const nickByChannel = new Map();
 const wssList = [];
 
-/** Если MongoDB недоступна — чат в RAM (до перезапуска). */
+function getNickMap(channel) {
+  if (!nickByChannel.has(channel)) {
+    nickByChannel.set(channel, new Map());
+  }
+  return nickByChannel.get(channel);
+}
+
+/** Если MongoDB недоступна — чат в RAM (до перезапуска), по каналам. */
 let mongoReady = false;
-const memoryChat = [];
+const memoryChatByChannel = new Map();
 const MEMORY_CHAT_LIMIT = 100;
 let memoryChatSeq = 1;
 
-function appendMemoryChat(nickname, text, imageMime, imageData) {
+function getMemoryChatArray(channel) {
+  if (!memoryChatByChannel.has(channel)) {
+    memoryChatByChannel.set(channel, []);
+  }
+  return memoryChatByChannel.get(channel);
+}
+
+function appendMemoryChat(channel, nickname, text, imageMime, imageData) {
+  const arr = getMemoryChatArray(channel);
   const row = {
     id: String(memoryChatSeq++),
     nickname,
@@ -51,15 +88,15 @@ function appendMemoryChat(nickname, text, imageMime, imageData) {
     imageData: imageData || null,
     createdAt: new Date(),
   };
-  memoryChat.push(row);
-  while (memoryChat.length > MEMORY_CHAT_LIMIT) {
-    memoryChat.shift();
+  arr.push(row);
+  while (arr.length > MEMORY_CHAT_LIMIT) {
+    arr.shift();
   }
   return row;
 }
 
-function memoryChatHistoryPayload() {
-  return memoryChat.map((d) => ({
+function memoryChatHistoryPayload(channel) {
+  return getMemoryChatArray(channel).map((d) => ({
     id: d.id,
     nickname: d.nickname,
     text: d.text,
@@ -67,6 +104,19 @@ function memoryChatHistoryPayload() {
     imageMime: d.imageMime || undefined,
     imageData: d.imageData || undefined,
   }));
+}
+
+function chatHistoryMongoFilter(channel) {
+  if (channel === DEFAULT_CHANNEL) {
+    return {
+      $or: [
+        { channel: DEFAULT_CHANNEL },
+        { channel: { $exists: false } },
+        { channel: null },
+      ],
+    };
+  }
+  return { channel };
 }
 
 const CHAT_IMAGE_MAX_B64 = 2_500_000;
@@ -155,13 +205,16 @@ function send(ws, payload) {
   }
 }
 
-function broadcast(payload, exceptWs = null) {
+function broadcastToChannel(channel, payload, exceptWs = null) {
   for (const wss of wssList) {
     for (const client of wss.clients) {
       if (client === exceptWs) {
         continue;
       }
-      send(client, payload);
+      const c = clientsBySocket.get(client);
+      if (c && c.channel === channel) {
+        send(client, payload);
+      }
     }
   }
 }
@@ -173,9 +226,10 @@ function leave(ws) {
   }
 
   clientsBySocket.delete(ws);
-  socketsByNickname.delete(client.nickname);
+  const map = getNickMap(client.channel);
+  map.delete(client.nickname);
 
-  broadcast({
+  broadcastToChannel(client.channel, {
     type: "peer-left",
     nickname: client.nickname,
   });
@@ -193,12 +247,12 @@ function attachWebSocketServer(server) {
       try {
         message = JSON.parse(raw.toString());
       } catch (error) {
-        send(ws, { type: "error", message: "Invalid JSON payload." });
+        send(ws, { type: "error", message: "Неверный JSON." });
         return;
       }
 
       if (!message || typeof message !== "object" || Array.isArray(message)) {
-        send(ws, { type: "error", message: "Invalid message shape." });
+        send(ws, { type: "error", message: "Неверный формат сообщения." });
         return;
       }
 
@@ -226,29 +280,39 @@ function attachWebSocketServer(server) {
 
       if (msgType === "join") {
         const nickname = (message.nickname || "").trim();
+        const channelNorm = normalizeChannelInput(message.channel);
 
         if (!nickname) {
-          send(ws, { type: "join-rejected", reason: "Nickname is required." });
+          send(ws, { type: "join-rejected", reason: "Нужен ник." });
           return;
         }
+
+        if (!channelNorm.ok) {
+          send(ws, { type: "join-rejected", reason: channelNorm.reason });
+          return;
+        }
+
+        const channel = channelNorm.channel;
 
         if (clientsBySocket.has(ws)) {
-          send(ws, { type: "join-rejected", reason: "Already joined." });
+          send(ws, { type: "join-rejected", reason: "Уже в комнате." });
           return;
         }
 
-        if (socketsByNickname.has(nickname)) {
-          send(ws, { type: "join-rejected", reason: "Nickname already taken." });
+        const nickMap = getNickMap(channel);
+        if (nickMap.has(nickname)) {
+          send(ws, { type: "join-rejected", reason: "Этот ник уже занят в канале." });
           return;
         }
 
-        clientsBySocket.set(ws, { nickname });
-        socketsByNickname.set(nickname, ws);
+        clientsBySocket.set(ws, { nickname, channel });
+        nickMap.set(nickname, ws);
 
-        const peers = Array.from(socketsByNickname.keys()).filter((name) => name !== nickname);
-        send(ws, { type: "join-accepted", nickname, peers });
+        const peers = Array.from(nickMap.keys()).filter((name) => name !== nickname);
+        send(ws, { type: "join-accepted", nickname, channel, peers });
 
-        broadcast(
+        broadcastToChannel(
+          channel,
           {
             type: "peer-joined",
             nickname,
@@ -260,7 +324,8 @@ function attachWebSocketServer(server) {
           try {
             let messages;
             if (mongoReady && mongoose.connection.readyState === 1) {
-              const docs = await ChatMessage.find().sort({ createdAt: -1 }).limit(100).lean();
+              const filter = chatHistoryMongoFilter(channel);
+              const docs = await ChatMessage.find(filter).sort({ createdAt: -1 }).limit(100).lean();
               messages = docs.reverse().map((d) => ({
                 id: String(d._id),
                 nickname: d.nickname,
@@ -270,12 +335,12 @@ function attachWebSocketServer(server) {
                 imageData: d.imageData || undefined,
               }));
             } else {
-              messages = memoryChatHistoryPayload();
+              messages = memoryChatHistoryPayload(channel);
             }
             send(ws, { type: "chat-history", messages });
           } catch (error) {
             console.error("chat-history:", error);
-            send(ws, { type: "error", message: "Failed to load chat history." });
+            send(ws, { type: "error", message: "Не удалось загрузить историю чата." });
           }
         })();
         return;
@@ -283,7 +348,7 @@ function attachWebSocketServer(server) {
 
       const sender = clientsBySocket.get(ws);
       if (!sender) {
-        send(ws, { type: "error", message: "Join before signaling." });
+        send(ws, { type: "error", message: "Сначала войдите в комнату." });
         return;
       }
 
@@ -312,6 +377,7 @@ function attachWebSocketServer(server) {
             let createdAt;
             if (mongoReady && mongoose.connection.readyState === 1) {
               const doc = await ChatMessage.create({
+                channel: sender.channel,
                 nickname: sender.nickname,
                 text: outText,
                 imageMime: outMime || undefined,
@@ -323,7 +389,7 @@ function attachWebSocketServer(server) {
               outData = doc.imageData || null;
               createdAt = doc.createdAt.toISOString();
             } else {
-              const row = appendMemoryChat(sender.nickname, text, outMime, outData);
+              const row = appendMemoryChat(sender.channel, sender.nickname, text, outMime, outData);
               id = row.id;
               outText = row.text || "";
               outMime = row.imageMime;
@@ -341,10 +407,10 @@ function attachWebSocketServer(server) {
               payload.imageMime = outMime;
               payload.imageData = outData;
             }
-            broadcast(payload);
+            broadcastToChannel(sender.channel, payload);
           } catch (error) {
             console.error("chat save:", error);
-            send(ws, { type: "error", message: "Failed to save message." });
+            send(ws, { type: "error", message: "Не удалось сохранить сообщение." });
           }
         })();
         return;
@@ -353,13 +419,24 @@ function attachWebSocketServer(server) {
       if (msgType === "signal") {
         const target = (message.target || "").trim();
         const payload = message.payload;
-        const targetSocket = socketsByNickname.get(target);
+        const roomMap = getNickMap(sender.channel);
+        const targetSocket = roomMap.get(target);
 
         if (!targetSocket) {
           send(ws, {
             type: "signal-error",
             target,
-            reason: "Target not found.",
+            reason: "Участник не найден в этом канале.",
+          });
+          return;
+        }
+
+        const targetClient = clientsBySocket.get(targetSocket);
+        if (!targetClient || targetClient.channel !== sender.channel) {
+          send(ws, {
+            type: "signal-error",
+            target,
+            reason: "Участник не найден в этом канале.",
           });
           return;
         }
@@ -375,7 +452,7 @@ function attachWebSocketServer(server) {
       console.warn("Unknown WebSocket message type:", msgType, message);
       send(ws, {
         type: "error",
-        message: `Unknown message type: ${msgType || "(empty)"}`,
+        message: `Неизвестный тип сообщения: ${msgType || "(пусто)"}`,
       });
     });
 
