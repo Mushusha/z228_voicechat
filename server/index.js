@@ -58,6 +58,9 @@ const clientsBySocket = new Map();
 const nickByChannel = new Map();
 const wssList = [];
 
+/** Каналы, которые когда-либо были в БД/памяти или сейчас с людьми (для общего списка). */
+const knownChannelNames = new Set([DEFAULT_CHANNEL]);
+
 function getNickMap(channel) {
   if (!nickByChannel.has(channel)) {
     nickByChannel.set(channel, new Map());
@@ -117,6 +120,28 @@ function chatHistoryMongoFilter(channel) {
     };
   }
   return { channel };
+}
+
+async function hydrateKnownChannelsFromMongo() {
+  if (!mongoReady || mongoose.connection.readyState !== 1) {
+    return;
+  }
+  try {
+    const arr = await ChatMessage.distinct("channel");
+    for (const c of arr) {
+      if (c) {
+        knownChannelNames.add(String(c).trim().toLowerCase());
+      }
+    }
+    const legacy = await ChatMessage.countDocuments({
+      $or: [{ channel: { $exists: false } }, { channel: null }, { channel: "" }],
+    });
+    if (legacy > 0) {
+      knownChannelNames.add(DEFAULT_CHANNEL);
+    }
+  } catch (error) {
+    console.error("hydrateKnownChannelsFromMongo:", error);
+  }
 }
 
 const CHAT_IMAGE_MAX_B64 = 2_500_000;
@@ -219,6 +244,41 @@ function broadcastToChannel(channel, payload, exceptWs = null) {
   }
 }
 
+function collectChannelNames() {
+  const s = new Set(knownChannelNames);
+  s.add(DEFAULT_CHANNEL);
+  for (const [ch, map] of nickByChannel) {
+    if (map.size > 0) {
+      s.add(ch);
+    }
+  }
+  for (const [ch, arr] of memoryChatByChannel) {
+    if (arr.length > 0) {
+      s.add(ch);
+    }
+  }
+  return Array.from(s).sort((a, b) => a.localeCompare(b));
+}
+
+function buildChannelListPayload() {
+  const names = collectChannelNames();
+  const channels = names.map((name) => {
+    const map = nickByChannel.get(name);
+    const online = map ? map.size : 0;
+    return { name, online };
+  });
+  return { type: "channel-list", channels };
+}
+
+function broadcastChannelListGlobally() {
+  const payload = buildChannelListPayload();
+  for (const wss of wssList) {
+    for (const client of wss.clients) {
+      send(client, payload);
+    }
+  }
+}
+
 function leave(ws) {
   const client = clientsBySocket.get(ws);
   if (!client) {
@@ -233,6 +293,7 @@ function leave(ws) {
     type: "peer-left",
     nickname: client.nickname,
   });
+  broadcastChannelListGlobally();
 }
 
 function attachWebSocketServer(server) {
@@ -241,6 +302,7 @@ function attachWebSocketServer(server) {
 
   wss.on("connection", (ws) => {
     send(ws, { type: "hello" });
+    send(ws, buildChannelListPayload());
 
     ws.on("message", (raw) => {
       let message;
@@ -260,6 +322,7 @@ function attachWebSocketServer(server) {
 
       const clientShouldNotSend = new Set([
         "hello",
+        "channel-list",
         "chat-history",
         "chat-message",
         "join-accepted",
@@ -307,6 +370,7 @@ function attachWebSocketServer(server) {
 
         clientsBySocket.set(ws, { nickname, channel });
         nickMap.set(nickname, ws);
+        knownChannelNames.add(channel);
 
         const peers = Array.from(nickMap.keys()).filter((name) => name !== nickname);
         send(ws, { type: "join-accepted", nickname, channel, peers });
@@ -319,6 +383,7 @@ function attachWebSocketServer(server) {
           },
           ws
         );
+        broadcastChannelListGlobally();
 
         void (async () => {
           try {
@@ -376,6 +441,7 @@ function attachWebSocketServer(server) {
             let outData = normalizedImg ? normalizedImg.data : null;
             let createdAt;
             if (mongoReady && mongoose.connection.readyState === 1) {
+              knownChannelNames.add(sender.channel);
               const doc = await ChatMessage.create({
                 channel: sender.channel,
                 nickname: sender.nickname,
@@ -389,6 +455,7 @@ function attachWebSocketServer(server) {
               outData = doc.imageData || null;
               createdAt = doc.createdAt.toISOString();
             } else {
+              knownChannelNames.add(sender.channel);
               const row = appendMemoryChat(sender.channel, sender.nickname, text, outMime, outData);
               id = row.id;
               outText = row.text || "";
@@ -473,6 +540,7 @@ async function start() {
     });
     mongoReady = true;
     console.log("MongoDB connected — chat persists in the database");
+    await hydrateKnownChannelsFromMongo();
   } catch (error) {
     mongoReady = false;
     console.warn("MongoDB unavailable — chat uses in-memory store (cleared on restart).");

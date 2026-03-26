@@ -98,6 +98,7 @@ function getCookie(name) {
 
 const nicknameInput = document.getElementById("nickname");
 const channelInput = document.getElementById("channelInput");
+const channelListEl = document.getElementById("channelList");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const micBtn = document.getElementById("micBtn");
@@ -193,6 +194,45 @@ function updateChatHeaderTitle() {
     el.textContent = `Чат · канал: ${myChannel}`;
   } else {
     el.textContent = "Чат";
+  }
+}
+
+function renderChannelList(channels) {
+  if (!channelListEl) {
+    return;
+  }
+  const list = Array.isArray(channels) ? channels : [];
+  channelListEl.innerHTML = "";
+  for (const row of list) {
+    const name = row && row.name ? String(row.name) : "";
+    if (!name) {
+      continue;
+    }
+    const online = typeof row.online === "number" ? row.online : 0;
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "channel-pick";
+    btn.textContent = name;
+    btn.title = joinedRoom ? "Смена канала после выхода" : `Выбрать канал ${name}`;
+    btn.addEventListener("click", () => {
+      if (!channelInput) {
+        return;
+      }
+      if (joinedRoom) {
+        setStatus("Чтобы сменить канал, нажмите «Выйти», выберите канал и войдите снова.");
+        return;
+      }
+      channelInput.value = name;
+      localStorage.setItem(LS_CHANNEL, name);
+    });
+    const span = document.createElement("span");
+    span.className = "ch-online";
+    span.textContent = online > 0 ? `${online} в сети` : "нет";
+    span.title = "Участников сейчас в канале";
+    li.appendChild(btn);
+    li.appendChild(span);
+    channelListEl.appendChild(li);
   }
 }
 
@@ -949,6 +989,9 @@ function connectSocket() {
     }
 
     switch (message.type) {
+      case "channel-list":
+        renderChannelList(message.channels);
+        break;
       case "join-accepted":
         joinBtn.disabled = true;
         nicknameInput.disabled = true;

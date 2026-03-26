@@ -404,6 +404,59 @@
         line-height: 1.35;
       }
 
+      .channel-roster-wrap {
+        margin-top: 6px;
+      }
+
+      .channel-roster {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .channel-roster li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--input-bg);
+        font-size: 0.8125rem;
+        min-height: 40px;
+      }
+
+      .channel-roster button.channel-pick {
+        flex: 1;
+        min-width: 0;
+        text-align: left;
+        padding: 8px 10px;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        font-size: inherit;
+        border-radius: 7px 0 0 7px;
+      }
+
+      .channel-roster button.channel-pick:hover:not(:disabled) {
+        filter: brightness(1.12);
+      }
+
+      .channel-roster .ch-online {
+        color: var(--text-muted);
+        font-size: 0.72rem;
+        flex-shrink: 0;
+        padding: 0 10px 0 0;
+        white-space: nowrap;
+      }
+
       @media (max-width: 720px) {
         .mobile-tabs {
           display: flex;
@@ -527,6 +580,10 @@
                 autocomplete="off"
               />
               <p class="channel-hint">Латиница, цифры, дефис и подчёркивание; пусто = general</p>
+              <div class="channel-roster-wrap">
+                <h2 class="section-title">Все каналы</h2>
+                <ul id="channelList" class="channel-roster" aria-live="polite"></ul>
+              </div>
               <div class="row">
                 <button id="joinBtn" type="button" class="btn-primary">Войти</button>
                 <button id="leaveBtn" type="button" disabled>Выйти</button>
@@ -570,6 +627,6 @@
         </footer>
       </main>
     </div>
-    <script src="./app.js?v=16"></script>
+    <script src="./app.js?v=17"></script>
   </body>
 </html>
