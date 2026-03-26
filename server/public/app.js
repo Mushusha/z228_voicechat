@@ -61,6 +61,7 @@ window.addEventListener("beforeunload", closeSignalingOnPageExit);
 
 /** Сброс незавершённого входа: «висящий» WebSocket в CONNECTING блокировал повторный join(). */
 function forceDisconnectClient() {
+  clearCachedAdminSession();
   joinedRoom = false;
   if (socket) {
     const s = socket;
@@ -81,7 +82,9 @@ function forceDisconnectClient() {
   for (const peerNickname of Array.from(peers.keys())) {
     removePeer(peerNickname);
   }
-  micBtn.disabled = true;
+  if (micBtn) {
+    micBtn.disabled = true;
+  }
   setChatEnabled(false);
   if (leaveBtn) {
     leaveBtn.disabled = true;
@@ -123,6 +126,20 @@ const chatSendBtn = document.getElementById("chatSendBtn");
 const chatImageInput = document.getElementById("chatImageInput");
 const chatImageBtn = document.getElementById("chatImageBtn");
 const themeBtn = document.getElementById("themeBtn");
+const chatMenuBtn = document.getElementById("chatMenuBtn");
+const chatDropdown = document.getElementById("chatDropdown");
+const menuThemeBtn = document.getElementById("menuThemeBtn");
+const menuAdminBtn = document.getElementById("menuAdminBtn");
+const adminModal = document.getElementById("adminModal");
+const adminModalClose = document.getElementById("adminModalClose");
+const adminParticipantsList = document.getElementById("adminParticipantsList");
+const adminAuthSection = document.getElementById("adminAuthSection");
+const adminPanelBody = document.getElementById("adminPanelBody");
+const adminPasswordInput = document.getElementById("adminPasswordInput");
+const adminAuthSubmit = document.getElementById("adminAuthSubmit");
+const adminAuthError = document.getElementById("adminAuthError");
+const adminJoinHint = document.getElementById("adminJoinHint");
+const adminLogoutBtn = document.getElementById("adminLogoutBtn");
 
 const peers = new Map();
 const remoteAudioByPeer = new Map();
@@ -193,6 +210,10 @@ let localStream = null;
 let micEnabled = true;
 let joinedRoom = false;
 let rtcChain = Promise.resolve();
+let cachedAdminSecret = null;
+let pendingAdminSecretAttempt = null;
+let awaitingAdminVerifyResponse = false;
+let adminServerPeers = [];
 
 function normalizeChannelForJoin(raw) {
   let s = String(raw ?? "").trim().toLowerCase();
@@ -923,6 +944,165 @@ function renderParticipants() {
 
     participantsEl.appendChild(li);
   }
+
+  syncAdminParticipantListIfVisible();
+}
+
+function updateAdminJoinHint() {
+  if (adminJoinHint) {
+    adminJoinHint.hidden = joinedRoom;
+  }
+  if (adminAuthSubmit) {
+    adminAuthSubmit.disabled = !joinedRoom;
+  }
+}
+
+function clearCachedAdminSession() {
+  cachedAdminSecret = null;
+  adminServerPeers = [];
+  pendingAdminSecretAttempt = null;
+  awaitingAdminVerifyResponse = false;
+  if (adminPasswordInput) {
+    adminPasswordInput.value = "";
+  }
+  if (adminAuthError) {
+    adminAuthError.textContent = "";
+    adminAuthError.hidden = true;
+  }
+}
+
+function updateAdminModalLayout() {
+  const authed = Boolean(cachedAdminSecret);
+  if (adminAuthSection) {
+    adminAuthSection.hidden = authed;
+  }
+  if (adminPanelBody) {
+    adminPanelBody.hidden = !authed;
+  }
+  updateAdminJoinHint();
+}
+
+function requestAdminPeerList() {
+  if (!cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  socket.send(JSON.stringify({ type: "admin-peers", secret: cachedAdminSecret }));
+}
+
+function notifyAdminRosterRefresh() {
+  if (!adminModal || adminModal.hidden || !cachedAdminSecret) {
+    return;
+  }
+  requestAdminPeerList();
+}
+
+function submitAdminPassword() {
+  if (adminAuthError) {
+    adminAuthError.hidden = true;
+    adminAuthError.textContent = "";
+  }
+  if (!joinedRoom || !socket || socket.readyState !== WebSocket.OPEN) {
+    if (adminAuthError) {
+      adminAuthError.textContent = "Нужно быть в комнате.";
+      adminAuthError.hidden = false;
+    }
+    return;
+  }
+  const secret = String(adminPasswordInput ? adminPasswordInput.value : "").trim();
+  if (!secret) {
+    if (adminAuthError) {
+      adminAuthError.textContent = "Введите пароль.";
+      adminAuthError.hidden = false;
+    }
+    return;
+  }
+  pendingAdminSecretAttempt = secret;
+  awaitingAdminVerifyResponse = true;
+  socket.send(JSON.stringify({ type: "admin-verify", secret }));
+}
+
+function normalizeAdminPeerEntry(entry) {
+  if (typeof entry === "string") {
+    const nickname = entry.trim();
+    return { nickname, display: nickname };
+  }
+  if (entry && typeof entry === "object") {
+    const nickname = String(entry.nickname || "").trim();
+    const textChannel = entry.textChannel != null ? String(entry.textChannel) : "";
+    const voiceChannel = entry.voiceChannel != null ? String(entry.voiceChannel) : "";
+    const ch =
+      textChannel || voiceChannel
+        ? `${textChannel ? `#${textChannel}` : "—"} / ${voiceChannel || "—"}`
+        : "";
+    const display = ch ? `${nickname} — ${ch}` : nickname;
+    return { nickname, display };
+  }
+  return { nickname: "", display: "" };
+}
+
+function renderAdminParticipantList() {
+  if (!adminParticipantsList) {
+    return;
+  }
+  adminParticipantsList.innerHTML = "";
+  if (!cachedAdminSecret) {
+    return;
+  }
+  if (!joinedRoom || !myNickname) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Нет подключения к комнате.";
+    adminParticipantsList.appendChild(li);
+    return;
+  }
+  const rows = adminServerPeers
+    .map(normalizeAdminPeerEntry)
+    .filter((r) => r.nickname)
+    .sort((a, b) => a.nickname.localeCompare(b.nickname, "ru"));
+  if (rows.length === 0) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Список пуст.";
+    adminParticipantsList.appendChild(li);
+    return;
+  }
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-row";
+    const span = document.createElement("span");
+    span.className = "admin-participant-name";
+    span.textContent =
+      row.nickname === myNickname ? `${row.display} (вы)` : row.display;
+    li.appendChild(span);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-kick";
+    btn.textContent = "Исключить";
+    btn.setAttribute("aria-label", `Исключить ${row.nickname} из комнаты`);
+    btn.addEventListener("click", () => {
+      requestKickParticipant(row.nickname);
+    });
+    li.appendChild(btn);
+    adminParticipantsList.appendChild(li);
+  }
+}
+
+function syncAdminParticipantListIfVisible() {
+  if (!adminModal || adminModal.hidden) {
+    return;
+  }
+  if (cachedAdminSecret && socket && socket.readyState === WebSocket.OPEN && joinedRoom) {
+    requestAdminPeerList();
+  } else {
+    renderAdminParticipantList();
+  }
+}
+
+function requestKickParticipant(targetNick) {
+  if (!targetNick || !cachedAdminSecret || !socket || socket.readyState !== WebSocket.OPEN || !joinedRoom) {
+    return;
+  }
+  socket.send(JSON.stringify({ type: "admin-kick", target: targetNick, secret: cachedAdminSecret }));
 }
 
 function sendSignal(target, payload) {
@@ -1115,8 +1295,11 @@ function connectSocket() {
     }
 
     switch (message.type) {
+      case "hello":
+        break;
       case "channel-list":
         renderChannelRoster(message);
+        notifyAdminRosterRefresh();
         break;
       case "join-accepted":
         joinBtn.disabled = true;
@@ -1147,13 +1330,16 @@ function connectSocket() {
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
           setStatus(`В сети как ${message.nickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`);
-          micBtn.disabled = false;
+          if (micBtn) {
+            micBtn.disabled = false;
+          }
           setChatEnabled(true);
           for (const peerNickname of message.peers) {
             await createPeerConnection(peerNickname, false);
           }
         });
         await rtcChain;
+        updateAdminJoinHint();
         break;
       case "chat-history":
         renderChatHistory(message.messages || []);
@@ -1185,6 +1371,7 @@ function connectSocket() {
           leaveBtn.disabled = true;
         }
         clearRejoinHint();
+        updateAdminJoinHint();
         break;
       case "peer-joined":
         enqueueRtc(async () => {
@@ -1192,10 +1379,35 @@ function connectSocket() {
           setStatus(`${message.nickname} вошёл`);
         });
         await rtcChain;
+        notifyAdminRosterRefresh();
         break;
       case "peer-left":
         removePeer(message.nickname);
         setStatus(`${message.nickname} вышел`);
+        notifyAdminRosterRefresh();
+        break;
+      case "kicked":
+        setStatus(message.reason || "Вас исключили.");
+        clearCachedAdminSession();
+        updateAdminModalLayout();
+        if (adminModal) {
+          adminModal.hidden = true;
+        }
+        clearRejoinHint();
+        forceDisconnectClient();
+        joinBtn.disabled = false;
+        nicknameInput.disabled = false;
+        myTextChannel = "";
+        myVoiceChannel = "";
+        myChannel = "";
+        updateChatHeaderTitle();
+        updatePickHint();
+        if (lastChannelListPayload) {
+          renderChannelRoster(null);
+        }
+        if (chatLog) {
+          chatLog.innerHTML = "";
+        }
         break;
       case "signal":
         enqueueRtc(() => handleSignal(message.from, message.payload));
@@ -1204,7 +1416,40 @@ function connectSocket() {
       case "signal-error":
         console.warn("Signal error:", message);
         break;
+      case "admin-verify-ok":
+        awaitingAdminVerifyResponse = false;
+        cachedAdminSecret = pendingAdminSecretAttempt;
+        pendingAdminSecretAttempt = null;
+        updateAdminModalLayout();
+        if (adminPasswordInput) {
+          adminPasswordInput.value = "";
+        }
+        if (adminAuthError) {
+          adminAuthError.hidden = true;
+          adminAuthError.textContent = "";
+        }
+        requestAdminPeerList();
+        break;
+      case "admin-peers-result":
+        adminServerPeers = Array.isArray(message.peers) ? message.peers : [];
+        renderAdminParticipantList();
+        break;
       case "error":
+        if (awaitingAdminVerifyResponse) {
+          awaitingAdminVerifyResponse = false;
+          pendingAdminSecretAttempt = null;
+          if (adminAuthError) {
+            const errText = message.message || "Ошибка";
+            if (/unknown message type:\s*admin-verify/i.test(errText)) {
+              adminAuthError.textContent =
+                "Сервер старой версии (нет admin-verify). Остановите процесс и снова запустите npm start в папке сервера или выполните docker compose build && docker compose up.";
+            } else {
+              adminAuthError.textContent = errText;
+            }
+            adminAuthError.hidden = false;
+          }
+          break;
+        }
         console.error("Server error:", message.message);
         setStatus(`Ошибка: ${message.message}`);
         break;
@@ -1219,7 +1464,9 @@ function connectSocket() {
       socket = null;
       rtcChain = Promise.resolve();
       setStatus("Отключено");
-      micBtn.disabled = true;
+      if (micBtn) {
+        micBtn.disabled = true;
+      }
       setChatEnabled(false);
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
@@ -1248,8 +1495,42 @@ function connectSocket() {
 
 function updateThemeButtonLabel() {
   const isLight = document.documentElement.getAttribute("data-theme") === "light";
-  themeBtn.textContent = isLight ? "Тема: светлая" : "Тема: тёмная";
-  themeBtn.setAttribute("aria-pressed", isLight ? "false" : "true");
+  const lightLabel = "Тема: светлая";
+  const darkLabel = "Тема: тёмная";
+  if (themeBtn) {
+    themeBtn.textContent = isLight ? lightLabel : darkLabel;
+    themeBtn.setAttribute("aria-pressed", isLight ? "false" : "true");
+  }
+  if (menuThemeBtn) {
+    menuThemeBtn.textContent = isLight ? lightLabel : darkLabel;
+    menuThemeBtn.setAttribute("aria-pressed", isLight ? "false" : "true");
+  }
+}
+
+function setChatDropdownOpen(open) {
+  if (!chatDropdown || !chatMenuBtn) {
+    return;
+  }
+  chatDropdown.hidden = !open;
+  chatMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function openAdminModalFromMenu() {
+  if (adminModal) {
+    adminModal.hidden = false;
+    updateAdminModalLayout();
+    renderAdminParticipantList();
+    if (cachedAdminSecret && socket && socket.readyState === WebSocket.OPEN && joinedRoom) {
+      requestAdminPeerList();
+    }
+  }
+  setChatDropdownOpen(false);
+}
+
+function closeAdminModalUi() {
+  if (adminModal) {
+    adminModal.hidden = true;
+  }
 }
 
 themeBtn.addEventListener("click", () => {
@@ -1260,6 +1541,73 @@ themeBtn.addEventListener("click", () => {
 });
 
 updateThemeButtonLabel();
+
+if (chatMenuBtn && chatDropdown) {
+  chatMenuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = chatDropdown.hidden;
+    setChatDropdownOpen(open);
+  });
+  document.addEventListener("click", () => setChatDropdownOpen(false));
+}
+
+if (menuThemeBtn) {
+  menuThemeBtn.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem(LS_THEME, next);
+    updateThemeButtonLabel();
+    setChatDropdownOpen(false);
+  });
+}
+
+if (menuAdminBtn) {
+  menuAdminBtn.addEventListener("click", () => {
+    openAdminModalFromMenu();
+  });
+}
+
+if (adminAuthSubmit) {
+  adminAuthSubmit.addEventListener("click", () => {
+    submitAdminPassword();
+  });
+}
+
+if (adminPasswordInput) {
+  adminPasswordInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitAdminPassword();
+    }
+  });
+}
+
+if (adminLogoutBtn) {
+  adminLogoutBtn.addEventListener("click", () => {
+    clearCachedAdminSession();
+    updateAdminModalLayout();
+    renderAdminParticipantList();
+    if (adminPasswordInput) {
+      adminPasswordInput.focus();
+    }
+  });
+}
+
+if (adminModalClose) {
+  adminModalClose.addEventListener("click", () => {
+    closeAdminModalUi();
+  });
+}
+
+if (adminModal) {
+  adminModal.addEventListener("click", (e) => {
+    if (e.target === adminModal) {
+      closeAdminModalUi();
+    }
+  });
+}
+
+updateAdminJoinHint();
 
 async function join(options = {}) {
   const fromAutoRejoin = options.fromAutoRejoin === true;
@@ -1343,9 +1691,11 @@ if (leaveBtn) {
   });
 }
 
-micBtn.addEventListener("click", () => {
-  setMicEnabled(!micEnabled);
-});
+if (micBtn) {
+  micBtn.addEventListener("click", () => {
+    setMicEnabled(!micEnabled);
+  });
+}
 
 chatSendBtn.addEventListener("click", () => {
   sendChat();

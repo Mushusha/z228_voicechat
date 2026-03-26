@@ -11,6 +11,12 @@ const ChatMessage = require("./models/ChatMessage");
 const PORT = Number(process.env.PORT) || 3000;
 const HTTPS_PORT = process.env.HTTPS_PORT === "0" ? 0 : Number(process.env.HTTPS_PORT) || 3443;
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/zalupa228local";
+/** Пароль для админ-панели (исключение участников). Переопределите в проде: ADMIN_PANEL_PASSWORD */
+const ADMIN_PANEL_PASSWORD = process.env.ADMIN_PANEL_PASSWORD || "admin123";
+
+function adminPanelSecretOk(message) {
+  return String(message.secret || "") === ADMIN_PANEL_PASSWORD;
+}
 
 function listenOptions(port) {
   const host = process.env.LISTEN_HOST || "::";
@@ -342,7 +348,7 @@ function attachWebSocketServer(server) {
   wssList.push(wss);
 
   wss.on("connection", (ws) => {
-    send(ws, { type: "hello" });
+    send(ws, { type: "hello", adminPanel: true });
     send(ws, buildChannelListPayload());
 
     ws.on("message", (raw) => {
@@ -372,6 +378,9 @@ function attachWebSocketServer(server) {
         "peer-left",
         "signal-error",
         "error",
+        "kicked",
+        "admin-verify-ok",
+        "admin-peers-result",
       ]);
       if (clientShouldNotSend.has(msgType)) {
         return;
@@ -585,6 +594,63 @@ function attachWebSocketServer(server) {
         return;
       }
 
+      if (msgType === "admin-verify") {
+        if (!adminPanelSecretOk(message)) {
+          send(ws, { type: "error", message: "Неверный пароль." });
+          return;
+        }
+        send(ws, { type: "admin-verify-ok" });
+        return;
+      }
+
+      if (msgType === "admin-peers") {
+        if (!adminPanelSecretOk(message)) {
+          send(ws, { type: "error", message: "Неверный пароль админ-панели." });
+          return;
+        }
+        const roster = Array.from(clientsBySocket.values())
+          .map((c) => ({
+            nickname: c.nickname,
+            textChannel: c.textChannel,
+            voiceChannel: c.voiceChannel,
+          }))
+          .sort((a, b) => a.nickname.localeCompare(b.nickname, "ru"));
+        send(ws, { type: "admin-peers-result", peers: roster });
+        return;
+      }
+
+      if (msgType === "admin-kick") {
+        if (!adminPanelSecretOk(message)) {
+          send(ws, { type: "error", message: "Неверный пароль админ-панели." });
+          return;
+        }
+        const targetNick = String(message.target || "").trim();
+        if (!targetNick) {
+          send(ws, { type: "error", message: "Укажите ник участника." });
+          return;
+        }
+        let targetWs = null;
+        for (const [sock, c] of clientsBySocket) {
+          if (c.nickname === targetNick) {
+            targetWs = sock;
+            break;
+          }
+        }
+        if (!targetWs) {
+          send(ws, { type: "error", message: "Участник не в комнате." });
+          return;
+        }
+        send(targetWs, {
+          type: "kicked",
+          reason: `Вас исключили из комнаты (оператор: ${sender.nickname}).`,
+        });
+        leave(targetWs);
+        try {
+          targetWs.close(4000, "kicked");
+        } catch (_) {}
+        return;
+      }
+
       console.warn("Unknown WebSocket message type:", msgType, message);
       send(ws, {
         type: "error",
@@ -626,6 +692,7 @@ async function start() {
   httpServer.listen(listenOptions(PORT), () => {
     const hostHint = process.env.LISTEN_HOST || ":: (all interfaces, IPv4+IPv6)";
     console.log(`HTTP: http://127.0.0.1:${PORT} — listening ${hostHint}`);
+    console.log("WebSocket: join / chat / signal / admin-verify / admin-peers / admin-kick");
   });
 
   if (HTTPS_PORT > 0) {
