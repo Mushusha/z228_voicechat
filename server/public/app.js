@@ -2,16 +2,25 @@ const NICK_COOKIE = "zalupa228_nick";
 const NICK_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
 const SS_JOINED = "zalupa_vc_joined";
 const SS_NICK = "zalupa_vc_nick";
-const SS_CHANNEL = "zalupa_vc_channel";
-const LS_CHANNEL = "zalupa228_channel";
+const SS_TEXT_CHANNEL = "zalupa_vc_text";
+const SS_VOICE_CHANNEL = "zalupa_vc_voice";
+const LS_TEXT_CHANNEL = "zalupa228_text_ch";
+const LS_VOICE_CHANNEL = "zalupa228_voice_ch";
+const LS_CUSTOM_TEXT = "zalupa228_custom_text_json";
+const LS_CUSTOM_VOICE = "zalupa228_custom_voice_json";
+const LS_CHANNEL_LEGACY = "zalupa228_channel";
 const LS_THEME = "zalupa_theme";
+
+const DEFAULT_TEXT_SLUGS = ["general", "offtopic"];
+const DEFAULT_VOICE_SLUGS = ["general", "lobby"];
 const LS_PEER_AUDIO = "zalupa228_peer_audio";
 const LS_MIC_ENABLED = "zalupa228_mic_on";
 
 function clearRejoinHint() {
   sessionStorage.removeItem(SS_JOINED);
   sessionStorage.removeItem(SS_NICK);
-  sessionStorage.removeItem(SS_CHANNEL);
+  sessionStorage.removeItem(SS_TEXT_CHANNEL);
+  sessionStorage.removeItem(SS_VOICE_CHANNEL);
 }
 
 function leaveRoom() {
@@ -19,12 +28,15 @@ function leaveRoom() {
   forceDisconnectClient();
   joinBtn.disabled = false;
   nicknameInput.disabled = false;
-  if (channelInput) {
-    channelInput.disabled = false;
-  }
+  myTextChannel = "";
+  myVoiceChannel = "";
   myChannel = "";
   updateChatHeaderTitle();
+  updatePickHint();
   setMobilePanel("room");
+  if (lastChannelListPayload) {
+    renderChannelRoster(lastChannelListPayload);
+  }
   if (chatLog) {
     chatLog.innerHTML = "";
   }
@@ -97,8 +109,9 @@ function getCookie(name) {
 })();
 
 const nicknameInput = document.getElementById("nickname");
-const channelInput = document.getElementById("channelInput");
-const channelListEl = document.getElementById("channelList");
+const textChannelListEl = document.getElementById("textChannelList");
+const voiceChannelListEl = document.getElementById("voiceChannelList");
+const pickHintEl = document.getElementById("pickHint");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 const micBtn = document.getElementById("micBtn");
@@ -163,9 +176,18 @@ async function flushPendingIce(peerNickname) {
 }
 
 let myNickname = null;
-/** Текущий канал на сервере после join; пустая строка — не в комнате */
+/** Текстовый канал после join (история чата) */
+let myTextChannel = "";
+/** Голосовой канал после join (WebRTC) */
+let myVoiceChannel = "";
+/** Совместимость: = myTextChannel */
 let myChannel = "";
-let pendingJoinChannel = "general";
+let pendingJoinText = "general";
+let pendingJoinVoice = "general";
+let selectedTextSlug = "general";
+let selectedVoiceSlug = "general";
+/** Последний payload channel-list с сервера (для перерисовки) */
+let lastChannelListPayload = null;
 let socket = null;
 let localStream = null;
 let micEnabled = true;
@@ -190,49 +212,158 @@ function setMobilePanel(which) {
 function updateChatHeaderTitle() {
   const el = document.getElementById("chatHeaderTitle");
   if (!el) return;
-  if (myChannel) {
-    el.textContent = `Чат · канал: ${myChannel}`;
+  if (myTextChannel) {
+    el.textContent = `Чат · #${myTextChannel}`;
   } else {
     el.textContent = "Чат";
   }
 }
 
-function renderChannelList(channels) {
-  if (!channelListEl) {
-    return;
+function updatePickHint() {
+  if (!pickHintEl) return;
+  if (joinedRoom) {
+    pickHintEl.textContent = `Текст: #${myTextChannel} · Голос: ${myVoiceChannel}`;
+  } else {
+    pickHintEl.textContent = `Текст: #${selectedTextSlug} · Голос: ${selectedVoiceSlug}`;
   }
-  const list = Array.isArray(channels) ? channels : [];
-  channelListEl.innerHTML = "";
-  for (const row of list) {
-    const name = row && row.name ? String(row.name) : "";
-    if (!name) {
-      continue;
+}
+
+function readCustomSlugs(key) {
+  try {
+    const t = localStorage.getItem(key);
+    const a = t ? JSON.parse(t) : [];
+    return Array.isArray(a) ? a.map((x) => String(x).trim().toLowerCase()).filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeCustomSlugs(key, arr) {
+  const u = [...new Set(arr.filter(Boolean))];
+  localStorage.setItem(key, JSON.stringify(u));
+}
+
+function mergeChannelRows(defaults, serverRows, customs) {
+  const map = new Map();
+  for (const n of defaults) {
+    map.set(n, { name: n, online: 0, members: [] });
+  }
+  for (const c of customs) {
+    if (c && !map.has(c)) {
+      map.set(c, { name: c, online: 0, members: [] });
     }
-    const online = typeof row.online === "number" ? row.online : 0;
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "channel-pick";
-    btn.textContent = name;
-    btn.title = joinedRoom ? "Смена канала после выхода" : `Выбрать канал ${name}`;
-    btn.addEventListener("click", () => {
-      if (!channelInput) {
-        return;
-      }
-      if (joinedRoom) {
-        setStatus("Чтобы сменить канал, нажмите «Выйти», выберите канал и войдите снова.");
-        return;
-      }
-      channelInput.value = name;
-      localStorage.setItem(LS_CHANNEL, name);
+  }
+  for (const row of serverRows || []) {
+    if (!row || !row.name) continue;
+    const prev = map.get(row.name) || { name: row.name, online: 0, members: [] };
+    map.set(row.name, {
+      name: row.name,
+      online: typeof row.online === "number" ? row.online : prev.online,
+      members: Array.isArray(row.members) ? row.members : prev.members,
     });
-    const span = document.createElement("span");
-    span.className = "ch-online";
-    span.textContent = online > 0 ? `${online} в сети` : "нет";
-    span.title = "Участников сейчас в канале";
-    li.appendChild(btn);
-    li.appendChild(span);
-    channelListEl.appendChild(li);
+  }
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderChannelRoster(payload) {
+  if (payload && typeof payload === "object") {
+    lastChannelListPayload = payload;
+  }
+  const p = lastChannelListPayload;
+  if (!p) return;
+
+  const legacyText = Array.isArray(p.channels)
+    ? p.channels.map((c) => ({ name: c.name, online: c.online }))
+    : null;
+  const textRows = mergeChannelRows(
+    DEFAULT_TEXT_SLUGS,
+    p.textChannels || legacyText,
+    readCustomSlugs(LS_CUSTOM_TEXT)
+  );
+  const voiceRows = mergeChannelRows(
+    DEFAULT_VOICE_SLUGS,
+    p.voiceChannels || [],
+    readCustomSlugs(LS_CUSTOM_VOICE)
+  );
+
+  if (textChannelListEl) {
+    textChannelListEl.innerHTML = "";
+    for (const row of textRows) {
+      const active = joinedRoom ? myTextChannel === row.name : selectedTextSlug === row.name;
+      const li = document.createElement("li");
+      li.className = "ch-item" + (active ? " selected" : "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ch-item-btn";
+      const hash = document.createElement("span");
+      hash.className = "ch-hash";
+      hash.textContent = "#";
+      const label = document.createElement("span");
+      label.textContent = row.name;
+      const meta = document.createElement("span");
+      meta.className = "ch-voice-meta";
+      meta.textContent = row.online > 0 ? String(row.online) : "";
+      btn.appendChild(hash);
+      btn.appendChild(label);
+      btn.appendChild(meta);
+      btn.addEventListener("click", () => {
+        if (joinedRoom) {
+          setStatus("Чтобы сменить текстовый канал, нажмите «Выйти» и войдите снова.");
+          return;
+        }
+        selectedTextSlug = row.name;
+        localStorage.setItem(LS_TEXT_CHANNEL, row.name);
+        updatePickHint();
+        renderChannelRoster(null);
+      });
+      li.appendChild(btn);
+      textChannelListEl.appendChild(li);
+    }
+  }
+
+  if (voiceChannelListEl) {
+    voiceChannelListEl.innerHTML = "";
+    for (const row of voiceRows) {
+      const members = Array.isArray(row.members) ? row.members : [];
+      const active = joinedRoom ? myVoiceChannel === row.name : selectedVoiceSlug === row.name;
+      const li = document.createElement("li");
+      li.className = "ch-item ch-item-voice" + (active ? " active" : "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ch-item-btn";
+      const sp = document.createElement("span");
+      sp.className = "ch-speaker";
+      sp.textContent = "🔊";
+      sp.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = row.name;
+      const meta = document.createElement("span");
+      meta.className = "ch-voice-meta";
+      meta.textContent = members.length > 0 ? String(members.length) : "";
+      btn.appendChild(sp);
+      btn.appendChild(label);
+      btn.appendChild(meta);
+      btn.addEventListener("click", () => {
+        if (joinedRoom) {
+          setStatus("Чтобы сменить голосовой канал, нажмите «Выйти» и войдите снова.");
+          return;
+        }
+        selectedVoiceSlug = row.name;
+        localStorage.setItem(LS_VOICE_CHANNEL, row.name);
+        updatePickHint();
+        renderChannelRoster(null);
+      });
+      li.appendChild(btn);
+      const sub = document.createElement("ul");
+      sub.className = "ch-voice-members";
+      for (const m of members) {
+        const liM = document.createElement("li");
+        liM.textContent = m;
+        sub.appendChild(liM);
+      }
+      li.appendChild(sub);
+      voiceChannelListEl.appendChild(li);
+    }
   }
 }
 
@@ -944,9 +1075,6 @@ function connectSocket() {
       } catch (_) {}
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
-      if (channelInput) {
-        channelInput.disabled = false;
-      }
       if (localStream) {
         localStream.getTracks().forEach((t) => t.stop());
         localStream = null;
@@ -959,7 +1087,8 @@ function connectSocket() {
       JSON.stringify({
         type: "join",
         nickname: myNickname,
-        channel: pendingJoinChannel,
+        textChannel: pendingJoinText,
+        voiceChannel: pendingJoinVoice,
       })
     );
   };
@@ -970,9 +1099,6 @@ function connectSocket() {
       setStatus("Ошибка WebSocket — проверьте сервер и URL.");
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
-      if (channelInput) {
-        channelInput.disabled = false;
-      }
       if (leaveBtn) {
         leaveBtn.disabled = true;
       }
@@ -990,20 +1116,25 @@ function connectSocket() {
 
     switch (message.type) {
       case "channel-list":
-        renderChannelList(message.channels);
+        renderChannelRoster(message);
         break;
       case "join-accepted":
         joinBtn.disabled = true;
         nicknameInput.disabled = true;
         nicknameInput.value = message.nickname;
-        myChannel = message.channel || pendingJoinChannel;
-        if (channelInput) {
-          channelInput.value = myChannel;
-          channelInput.disabled = true;
-        }
-        localStorage.setItem(LS_CHANNEL, myChannel);
-        sessionStorage.setItem(SS_CHANNEL, myChannel);
+        myTextChannel = message.textChannel || message.channel || pendingJoinText;
+        myVoiceChannel = message.voiceChannel || pendingJoinVoice;
+        myChannel = myTextChannel;
+        joinedRoom = true;
+        localStorage.setItem(LS_TEXT_CHANNEL, myTextChannel);
+        localStorage.setItem(LS_VOICE_CHANNEL, myVoiceChannel);
+        sessionStorage.setItem(SS_TEXT_CHANNEL, myTextChannel);
+        sessionStorage.setItem(SS_VOICE_CHANNEL, myVoiceChannel);
         updateChatHeaderTitle();
+        updatePickHint();
+        if (lastChannelListPayload) {
+          renderChannelRoster(null);
+        }
         if (window.matchMedia && window.matchMedia("(max-width: 720px)").matches) {
           setMobilePanel("chat");
         }
@@ -1011,12 +1142,11 @@ function connectSocket() {
           leaveBtn.disabled = false;
         }
         enqueueRtc(async () => {
-          joinedRoom = true;
           myNickname = message.nickname;
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
-          setStatus(`В сети как ${message.nickname} · ${myChannel}`);
+          setStatus(`В сети как ${message.nickname} · #${myTextChannel} · 🔊 ${myVoiceChannel}`);
           micBtn.disabled = false;
           setChatEnabled(true);
           for (const peerNickname of message.peers) {
@@ -1039,14 +1169,17 @@ function connectSocket() {
         break;
       case "join-rejected":
         joinedRoom = false;
+        myTextChannel = "";
+        myVoiceChannel = "";
         myChannel = "";
         updateChatHeaderTitle();
+        updatePickHint();
+        if (lastChannelListPayload) {
+          renderChannelRoster(null);
+        }
         setStatus(`Вход отклонён: ${message.reason}`);
         joinBtn.disabled = false;
         nicknameInput.disabled = false;
-        if (channelInput) {
-          channelInput.disabled = false;
-        }
         setChatEnabled(false);
         if (leaveBtn) {
           leaveBtn.disabled = true;
@@ -1090,11 +1223,14 @@ function connectSocket() {
       setChatEnabled(false);
       joinBtn.disabled = false;
       nicknameInput.disabled = false;
-      if (channelInput) {
-        channelInput.disabled = false;
-      }
+      myTextChannel = "";
+      myVoiceChannel = "";
       myChannel = "";
       updateChatHeaderTitle();
+      updatePickHint();
+      if (lastChannelListPayload) {
+        renderChannelRoster(null);
+      }
       if (leaveBtn) {
         leaveBtn.disabled = true;
       }
@@ -1134,15 +1270,18 @@ async function join(options = {}) {
     return;
   }
 
-  const channelOk = normalizeChannelForJoin(channelInput ? channelInput.value : "");
-  if (!channelOk) {
+  const textOk = normalizeChannelForJoin(selectedTextSlug);
+  const voiceOk = normalizeChannelForJoin(selectedVoiceSlug);
+  if (!textOk || !voiceOk) {
     setStatus(
-      "Канал: только латиница, цифры, дефис и подчёркивание, до 32 символов. Пустое поле = general."
+      "Каналы: только латиница, цифры, дефис и подчёркивание, до 32 символов. Пустое = general."
     );
     return;
   }
-  pendingJoinChannel = channelOk;
-  localStorage.setItem(LS_CHANNEL, pendingJoinChannel);
+  pendingJoinText = textOk;
+  pendingJoinVoice = voiceOk;
+  localStorage.setItem(LS_TEXT_CHANNEL, textOk);
+  localStorage.setItem(LS_VOICE_CHANNEL, voiceOk);
 
   if (joinedRoom) {
     setStatus("Вы уже в комнате.");
@@ -1268,15 +1407,76 @@ if (chatImageBtn && chatImageInput) {
   });
 }
 
+(function migrateLegacyChannelStorage() {
+  const leg = localStorage.getItem(LS_CHANNEL_LEGACY);
+  if (leg && !localStorage.getItem(LS_TEXT_CHANNEL)) {
+    const n = normalizeChannelForJoin(leg);
+    if (n) {
+      localStorage.setItem(LS_TEXT_CHANNEL, n);
+      localStorage.setItem(LS_VOICE_CHANNEL, n);
+    }
+  }
+})();
+
 (function initFromStorage() {
   const c = getCookie(NICK_COOKIE);
   if (c && nicknameInput && !nicknameInput.value.trim()) {
     nicknameInput.value = c;
   }
-  const ch = localStorage.getItem(LS_CHANNEL);
-  if (ch && channelInput) {
-    channelInput.value = ch;
+  const tx = localStorage.getItem(LS_TEXT_CHANNEL);
+  const vo = localStorage.getItem(LS_VOICE_CHANNEL);
+  if (tx) {
+    const n = normalizeChannelForJoin(tx);
+    if (n) selectedTextSlug = n;
   }
+  if (vo) {
+    const n = normalizeChannelForJoin(vo);
+    if (n) selectedVoiceSlug = n;
+  }
+  updatePickHint();
+})();
+
+(function initDiscordChannelsUi() {
+  document.querySelectorAll(".ch-cat-head").forEach((head) => {
+    head.addEventListener("click", () => {
+      const cat = head.closest(".ch-cat");
+      if (!cat) return;
+      const collapsed = cat.getAttribute("data-collapsed") === "true";
+      cat.setAttribute("data-collapsed", collapsed ? "false" : "true");
+      head.setAttribute("aria-expanded", collapsed ? "true" : "false");
+    });
+  });
+  document.querySelectorAll(".ch-cat-add").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const kind = btn.getAttribute("data-add");
+      const raw = window.prompt(
+        kind === "voice"
+          ? "Имя голосового канала (латиница, цифры, -, _):"
+          : "Имя текстового канала (латиница, цифры, -, _):"
+      );
+      const slug = normalizeChannelForJoin(raw || "");
+      if (!slug) {
+        setStatus("Неверное имя канала.");
+        return;
+      }
+      const key = kind === "voice" ? LS_CUSTOM_VOICE : LS_CUSTOM_TEXT;
+      const cur = readCustomSlugs(key);
+      if (!cur.includes(slug)) {
+        cur.push(slug);
+        writeCustomSlugs(key, cur);
+      }
+      if (kind === "voice") {
+        selectedVoiceSlug = slug;
+        localStorage.setItem(LS_VOICE_CHANNEL, slug);
+      } else {
+        selectedTextSlug = slug;
+        localStorage.setItem(LS_TEXT_CHANNEL, slug);
+      }
+      updatePickHint();
+      renderChannelRoster(null);
+    });
+  });
 })();
 
 (function initMobileTabs() {
@@ -1285,6 +1485,8 @@ if (chatImageBtn && chatImageInput) {
   if (tr) tr.addEventListener("click", () => setMobilePanel("room"));
   if (tc) tc.addEventListener("click", () => setMobilePanel("chat"));
 })();
+
+renderChannelRoster({ textChannels: [], voiceChannels: [] });
 
 (function trySessionRejoin() {
   if (sessionStorage.getItem(SS_JOINED) !== "1") {
@@ -1297,10 +1499,27 @@ if (chatImageBtn && chatImageInput) {
   if (nicknameInput) {
     nicknameInput.value = nick;
   }
-  const ch = sessionStorage.getItem(SS_CHANNEL);
-  if (ch && channelInput) {
-    channelInput.value = ch;
+  const tx = sessionStorage.getItem(SS_TEXT_CHANNEL);
+  const vo = sessionStorage.getItem(SS_VOICE_CHANNEL);
+  if (tx) {
+    const n = normalizeChannelForJoin(tx);
+    if (n) selectedTextSlug = n;
   }
+  if (vo) {
+    const n = normalizeChannelForJoin(vo);
+    if (n) selectedVoiceSlug = n;
+  }
+  if (!tx && !vo) {
+    const leg = sessionStorage.getItem("zalupa_vc_channel");
+    if (leg) {
+      const n = normalizeChannelForJoin(leg);
+      if (n) {
+        selectedTextSlug = n;
+        selectedVoiceSlug = n;
+      }
+    }
+  }
+  updatePickHint();
   setTimeout(() => {
     void join({ fromAutoRejoin: true });
   }, 0);

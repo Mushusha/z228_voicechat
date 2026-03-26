@@ -52,20 +52,31 @@ function normalizeChannelInput(raw) {
   return { ok: true, channel: s };
 }
 
-/** ws → { nickname, channel } */
+/** ws → { nickname, textChannel, voiceChannel } */
 const clientsBySocket = new Map();
-/** channel → Map(nickname → ws) */
-const nickByChannel = new Map();
+/** текстовый канал → Map(nickname → ws) */
+const nickByTextChannel = new Map();
+/** голосовой канал → Map(nickname → ws) */
+const nickByVoiceChannel = new Map();
 const wssList = [];
 
-/** Каналы, которые когда-либо были в БД/памяти или сейчас с людьми (для общего списка). */
-const knownChannelNames = new Set([DEFAULT_CHANNEL]);
+/** Текстовые каналы: БД / память / активные. */
+const knownTextChannelNames = new Set([DEFAULT_CHANNEL]);
+/** Голосовые каналы с активностью. */
+const knownVoiceChannelNames = new Set([DEFAULT_CHANNEL]);
 
-function getNickMap(channel) {
-  if (!nickByChannel.has(channel)) {
-    nickByChannel.set(channel, new Map());
+function getNickMapText(channel) {
+  if (!nickByTextChannel.has(channel)) {
+    nickByTextChannel.set(channel, new Map());
   }
-  return nickByChannel.get(channel);
+  return nickByTextChannel.get(channel);
+}
+
+function getNickMapVoice(channel) {
+  if (!nickByVoiceChannel.has(channel)) {
+    nickByVoiceChannel.set(channel, new Map());
+  }
+  return nickByVoiceChannel.get(channel);
 }
 
 /** Если MongoDB недоступна — чат в RAM (до перезапуска), по каналам. */
@@ -130,14 +141,14 @@ async function hydrateKnownChannelsFromMongo() {
     const arr = await ChatMessage.distinct("channel");
     for (const c of arr) {
       if (c) {
-        knownChannelNames.add(String(c).trim().toLowerCase());
+        knownTextChannelNames.add(String(c).trim().toLowerCase());
       }
     }
     const legacy = await ChatMessage.countDocuments({
       $or: [{ channel: { $exists: false } }, { channel: null }, { channel: "" }],
     });
     if (legacy > 0) {
-      knownChannelNames.add(DEFAULT_CHANNEL);
+      knownTextChannelNames.add(DEFAULT_CHANNEL);
     }
   } catch (error) {
     console.error("hydrateKnownChannelsFromMongo:", error);
@@ -230,24 +241,38 @@ function send(ws, payload) {
   }
 }
 
-function broadcastToChannel(channel, payload, exceptWs = null) {
+function broadcastToTextChannel(channel, payload, exceptWs = null) {
   for (const wss of wssList) {
     for (const client of wss.clients) {
       if (client === exceptWs) {
         continue;
       }
       const c = clientsBySocket.get(client);
-      if (c && c.channel === channel) {
+      if (c && c.textChannel === channel) {
         send(client, payload);
       }
     }
   }
 }
 
-function collectChannelNames() {
-  const s = new Set(knownChannelNames);
+function broadcastToVoiceChannel(channel, payload, exceptWs = null) {
+  for (const wss of wssList) {
+    for (const client of wss.clients) {
+      if (client === exceptWs) {
+        continue;
+      }
+      const c = clientsBySocket.get(client);
+      if (c && c.voiceChannel === channel) {
+        send(client, payload);
+      }
+    }
+  }
+}
+
+function collectTextChannelNames() {
+  const s = new Set(knownTextChannelNames);
   s.add(DEFAULT_CHANNEL);
-  for (const [ch, map] of nickByChannel) {
+  for (const [ch, map] of nickByTextChannel) {
     if (map.size > 0) {
       s.add(ch);
     }
@@ -260,14 +285,30 @@ function collectChannelNames() {
   return Array.from(s).sort((a, b) => a.localeCompare(b));
 }
 
+function collectVoiceChannelNames() {
+  const s = new Set(knownVoiceChannelNames);
+  s.add(DEFAULT_CHANNEL);
+  for (const [ch, map] of nickByVoiceChannel) {
+    if (map.size > 0) {
+      s.add(ch);
+    }
+  }
+  return Array.from(s).sort((a, b) => a.localeCompare(b));
+}
+
 function buildChannelListPayload() {
-  const names = collectChannelNames();
-  const channels = names.map((name) => {
-    const map = nickByChannel.get(name);
-    const online = map ? map.size : 0;
-    return { name, online };
+  const textNames = collectTextChannelNames();
+  const voiceNames = collectVoiceChannelNames();
+  const textChannels = textNames.map((name) => ({
+    name,
+    online: (nickByTextChannel.get(name) || new Map()).size,
+  }));
+  const voiceChannels = voiceNames.map((name) => {
+    const m = nickByVoiceChannel.get(name);
+    const members = m ? Array.from(m.keys()).sort((a, b) => a.localeCompare(b)) : [];
+    return { name, online: members.length, members };
   });
-  return { type: "channel-list", channels };
+  return { type: "channel-list", textChannels, voiceChannels };
 }
 
 function broadcastChannelListGlobally() {
@@ -286,10 +327,10 @@ function leave(ws) {
   }
 
   clientsBySocket.delete(ws);
-  const map = getNickMap(client.channel);
-  map.delete(client.nickname);
+  getNickMapText(client.textChannel).delete(client.nickname);
+  getNickMapVoice(client.voiceChannel).delete(client.nickname);
 
-  broadcastToChannel(client.channel, {
+  broadcastToVoiceChannel(client.voiceChannel, {
     type: "peer-left",
     nickname: client.nickname,
   });
@@ -343,40 +384,68 @@ function attachWebSocketServer(server) {
 
       if (msgType === "join") {
         const nickname = (message.nickname || "").trim();
-        const channelNorm = normalizeChannelInput(message.channel);
+        const rawText =
+          message.textChannel !== undefined && message.textChannel !== null
+            ? message.textChannel
+            : message.channel;
+        const rawVoice =
+          message.voiceChannel !== undefined && message.voiceChannel !== null
+            ? message.voiceChannel
+            : message.channel;
+        const textNorm = normalizeChannelInput(rawText);
+        const voiceNorm = normalizeChannelInput(rawVoice);
 
         if (!nickname) {
           send(ws, { type: "join-rejected", reason: "Нужен ник." });
           return;
         }
 
-        if (!channelNorm.ok) {
-          send(ws, { type: "join-rejected", reason: channelNorm.reason });
+        if (!textNorm.ok) {
+          send(ws, { type: "join-rejected", reason: textNorm.reason });
+          return;
+        }
+        if (!voiceNorm.ok) {
+          send(ws, { type: "join-rejected", reason: voiceNorm.reason });
           return;
         }
 
-        const channel = channelNorm.channel;
+        const textChannel = textNorm.channel;
+        const voiceChannel = voiceNorm.channel;
 
         if (clientsBySocket.has(ws)) {
           send(ws, { type: "join-rejected", reason: "Уже в комнате." });
           return;
         }
 
-        const nickMap = getNickMap(channel);
-        if (nickMap.has(nickname)) {
-          send(ws, { type: "join-rejected", reason: "Этот ник уже занят в канале." });
+        const nickText = getNickMapText(textChannel);
+        const nickVoice = getNickMapVoice(voiceChannel);
+        if (nickText.has(nickname)) {
+          send(ws, { type: "join-rejected", reason: "Этот ник уже занят в текстовом канале." });
+          return;
+        }
+        if (nickVoice.has(nickname)) {
+          send(ws, { type: "join-rejected", reason: "Этот ник уже занят в голосовом канале." });
           return;
         }
 
-        clientsBySocket.set(ws, { nickname, channel });
-        nickMap.set(nickname, ws);
-        knownChannelNames.add(channel);
+        clientsBySocket.set(ws, { nickname, textChannel, voiceChannel });
+        nickText.set(nickname, ws);
+        nickVoice.set(nickname, ws);
+        knownTextChannelNames.add(textChannel);
+        knownVoiceChannelNames.add(voiceChannel);
 
-        const peers = Array.from(nickMap.keys()).filter((name) => name !== nickname);
-        send(ws, { type: "join-accepted", nickname, channel, peers });
+        const peers = Array.from(nickVoice.keys()).filter((name) => name !== nickname);
+        send(ws, {
+          type: "join-accepted",
+          nickname,
+          textChannel,
+          voiceChannel,
+          channel: textChannel,
+          peers,
+        });
 
-        broadcastToChannel(
-          channel,
+        broadcastToVoiceChannel(
+          voiceChannel,
           {
             type: "peer-joined",
             nickname,
@@ -389,7 +458,7 @@ function attachWebSocketServer(server) {
           try {
             let messages;
             if (mongoReady && mongoose.connection.readyState === 1) {
-              const filter = chatHistoryMongoFilter(channel);
+              const filter = chatHistoryMongoFilter(textChannel);
               const docs = await ChatMessage.find(filter).sort({ createdAt: -1 }).limit(100).lean();
               messages = docs.reverse().map((d) => ({
                 id: String(d._id),
@@ -400,7 +469,7 @@ function attachWebSocketServer(server) {
                 imageData: d.imageData || undefined,
               }));
             } else {
-              messages = memoryChatHistoryPayload(channel);
+              messages = memoryChatHistoryPayload(textChannel);
             }
             send(ws, { type: "chat-history", messages });
           } catch (error) {
@@ -441,9 +510,9 @@ function attachWebSocketServer(server) {
             let outData = normalizedImg ? normalizedImg.data : null;
             let createdAt;
             if (mongoReady && mongoose.connection.readyState === 1) {
-              knownChannelNames.add(sender.channel);
+              knownTextChannelNames.add(sender.textChannel);
               const doc = await ChatMessage.create({
-                channel: sender.channel,
+                channel: sender.textChannel,
                 nickname: sender.nickname,
                 text: outText,
                 imageMime: outMime || undefined,
@@ -455,8 +524,8 @@ function attachWebSocketServer(server) {
               outData = doc.imageData || null;
               createdAt = doc.createdAt.toISOString();
             } else {
-              knownChannelNames.add(sender.channel);
-              const row = appendMemoryChat(sender.channel, sender.nickname, text, outMime, outData);
+              knownTextChannelNames.add(sender.textChannel);
+              const row = appendMemoryChat(sender.textChannel, sender.nickname, text, outMime, outData);
               id = row.id;
               outText = row.text || "";
               outMime = row.imageMime;
@@ -474,7 +543,7 @@ function attachWebSocketServer(server) {
               payload.imageMime = outMime;
               payload.imageData = outData;
             }
-            broadcastToChannel(sender.channel, payload);
+            broadcastToTextChannel(sender.textChannel, payload);
           } catch (error) {
             console.error("chat save:", error);
             send(ws, { type: "error", message: "Не удалось сохранить сообщение." });
@@ -486,24 +555,24 @@ function attachWebSocketServer(server) {
       if (msgType === "signal") {
         const target = (message.target || "").trim();
         const payload = message.payload;
-        const roomMap = getNickMap(sender.channel);
+        const roomMap = getNickMapVoice(sender.voiceChannel);
         const targetSocket = roomMap.get(target);
 
         if (!targetSocket) {
           send(ws, {
             type: "signal-error",
             target,
-            reason: "Участник не найден в этом канале.",
+            reason: "Участник не найден в этом голосовом канале.",
           });
           return;
         }
 
         const targetClient = clientsBySocket.get(targetSocket);
-        if (!targetClient || targetClient.channel !== sender.channel) {
+        if (!targetClient || targetClient.voiceChannel !== sender.voiceChannel) {
           send(ws, {
             type: "signal-error",
             target,
-            reason: "Участник не найден в этом канале.",
+            reason: "Участник не найден в этом голосовом канале.",
           });
           return;
         }

@@ -393,67 +393,174 @@
         width: 100%;
       }
 
-      .channel-field {
-        width: 100%;
-      }
-
-      .channel-hint {
-        font-size: 0.7rem;
+      .pick-hint {
+        font-size: 0.72rem;
         color: var(--text-muted);
-        margin: -4px 0 0;
-        line-height: 1.35;
+        margin: 0;
+        line-height: 1.45;
       }
 
-      .channel-roster-wrap {
-        margin-top: 6px;
+      .discord-channels {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-top: 4px;
       }
 
-      .channel-roster {
+      .ch-cat {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .ch-cat-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .ch-cat-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+        padding: 4px 2px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 0.68rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .ch-cat-head:hover {
+        color: var(--text);
+      }
+
+      .ch-cat-chevron {
+        display: inline-block;
+        width: 0.75rem;
+        transition: transform 0.15s ease;
+        font-size: 0.55rem;
+      }
+
+      .ch-cat[data-collapsed="true"] .ch-cat-chevron {
+        transform: rotate(-90deg);
+      }
+
+      .ch-cat[data-collapsed="true"] .ch-cat-list {
+        display: none;
+      }
+
+      .ch-cat-title {
+        flex: 1;
+      }
+
+      .ch-cat-add {
+        flex-shrink: 0;
+        padding: 2px 8px;
+        min-width: 28px;
+        border-radius: 4px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 1.1rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .ch-cat-add:hover {
+        color: var(--accent);
+      }
+
+      .ch-cat-list {
         list-style: none;
         padding: 0;
         margin: 0;
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        max-height: 200px;
-        overflow-y: auto;
+        gap: 2px;
       }
 
-      .channel-roster li {
+      .ch-item {
+        border-radius: 6px;
+        overflow: hidden;
+      }
+
+      .ch-item-btn {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 0;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--input-bg);
-        font-size: 0.8125rem;
-        min-height: 40px;
-      }
-
-      .channel-roster button.channel-pick {
-        flex: 1;
-        min-width: 0;
-        text-align: left;
-        padding: 8px 10px;
+        gap: 6px;
+        width: 100%;
+        padding: 6px 8px;
         border: none;
         background: transparent;
-        color: var(--text);
-        cursor: pointer;
-        font-size: inherit;
-        border-radius: 7px 0 0 7px;
-      }
-
-      .channel-roster button.channel-pick:hover:not(:disabled) {
-        filter: brightness(1.12);
-      }
-
-      .channel-roster .ch-online {
         color: var(--text-muted);
-        font-size: 0.72rem;
-        flex-shrink: 0;
-        padding: 0 10px 0 0;
+        font-size: 0.84rem;
+        cursor: pointer;
+        text-align: left;
+        border-radius: 6px;
+      }
+
+      .ch-item-btn:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+
+      .ch-item.selected .ch-item-btn {
+        background: var(--surface-hover);
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .ch-hash {
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+
+      .ch-item-voice .ch-item-btn {
+        font-weight: 500;
+      }
+
+      .ch-item-voice.active .ch-item-btn {
+        color: #4ade80;
+      }
+
+      .ch-item-voice .ch-speaker {
+        font-size: 0.85rem;
+        opacity: 0.85;
+      }
+
+      .ch-item-voice.active .ch-speaker {
+        opacity: 1;
+      }
+
+      .ch-voice-meta {
+        margin-left: auto;
+        font-size: 0.65rem;
+        color: var(--text-muted);
+      }
+
+      .ch-item-voice.active .ch-voice-meta {
+        color: #4ade80;
+      }
+
+      .ch-voice-members {
+        list-style: none;
+        padding: 0 0 4px 22px;
+        margin: 0;
+      }
+
+      .ch-voice-members li {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        padding: 3px 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
       }
 
@@ -569,20 +676,34 @@
                 maxlength="30"
                 autocomplete="username"
               />
-              <label class="section-title" for="channelInput">Канал</label>
-              <input
-                id="channelInput"
-                class="channel-field"
-                type="text"
-                placeholder="general"
-                maxlength="32"
-                spellcheck="false"
-                autocomplete="off"
-              />
-              <p class="channel-hint">Латиница, цифры, дефис и подчёркивание; пусто = general</p>
-              <div class="channel-roster-wrap">
-                <h2 class="section-title">Все каналы</h2>
-                <ul id="channelList" class="channel-roster" aria-live="polite"></ul>
+              <p class="pick-hint" id="pickHint" aria-live="polite">
+                Текст: #general · Голос: general
+              </p>
+              <div class="discord-channels" id="discordChannels">
+                <div class="ch-cat" data-collapsed="false" data-cat="text">
+                  <div class="ch-cat-toolbar">
+                    <button type="button" class="ch-cat-head" aria-expanded="true">
+                      <span class="ch-cat-chevron" aria-hidden="true">▼</span>
+                      <span class="ch-cat-title">Текстовые каналы</span>
+                    </button>
+                    <button type="button" class="ch-cat-add" data-add="text" title="Добавить текстовый канал">
+                      +
+                    </button>
+                  </div>
+                  <ul class="ch-cat-list" id="textChannelList"></ul>
+                </div>
+                <div class="ch-cat" data-collapsed="false" data-cat="voice">
+                  <div class="ch-cat-toolbar">
+                    <button type="button" class="ch-cat-head" aria-expanded="true">
+                      <span class="ch-cat-chevron" aria-hidden="true">▼</span>
+                      <span class="ch-cat-title">Голосовые каналы</span>
+                    </button>
+                    <button type="button" class="ch-cat-add" data-add="voice" title="Добавить голосовой канал">
+                      +
+                    </button>
+                  </div>
+                  <ul class="ch-cat-list" id="voiceChannelList"></ul>
+                </div>
               </div>
               <div class="row">
                 <button id="joinBtn" type="button" class="btn-primary">Войти</button>
@@ -627,6 +748,6 @@
         </footer>
       </main>
     </div>
-    <script src="./app.js?v=17"></script>
+    <script src="./app.js?v=18"></script>
   </body>
 </html>
