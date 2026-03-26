@@ -1,19 +1,15 @@
 {
   "name": "zalupa228local",
   "version": "1.0.0",
-  "description": "zalupa228local — mesh WebRTC voice chat with WebSocket signaling.",
-  "main": "server/index.js",
+  "description": "local-voicechat with C++ Drogon backend.",
+  "main": "backend-cpp/build-live/Debug/local_voicechat_drogon_live.exe",
   "scripts": {
-    "start": "node server/index.js",
-    "docker:up": "docker compose up --build"
+    "start": "npm run cpp:run-live",
+    "cpp:build-live": "cmake -S backend-cpp -B backend-cpp/build-live -DENABLE_DROGON_LIVE=ON -DCMAKE_TOOLCHAIN_FILE=C:/Users/mushusha/Documents/z228/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows && cmake --build backend-cpp/build-live --config Debug",
+    "cpp:run-live": "powershell -NoProfile -Command \"$env:PORT=3010; $env:STATIC_ROOT='server/public'; ./backend-cpp/build-live/Debug/local_voicechat_drogon_live.exe\"",
+    "cpp:test:compat": ".\\backend-cpp\\build-live\\Debug\\local_voicechat_contract_smoke.exe && .\\backend-cpp\\build-live\\Debug\\local_voicechat_stub_live_e2e.exe && .\\backend-cpp\\build-live\\Debug\\local_voicechat_ws_event_contract.exe && .\\backend-cpp\\build-live\\Debug\\local_voicechat_frontend_compat_e2e.exe"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "express": "^5.2.1",
-    "mongoose": "^9.3.3",
-    "selfsigned": "^5.5.0",
-    "ws": "^8.20.0"
-  }
+  "license": "ISC"
 }

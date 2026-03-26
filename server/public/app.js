@@ -200,8 +200,6 @@ let socket = null;
 let localStream = null;
 let micEnabled = true;
 let joinedRoom = false;
-/** null до первого hello; false — сервер без chat-edit/chat-delete (старый процесс/образ). */
-let serverChatMessageOps = null;
 let rtcChain = Promise.resolve();
 /** Если не null, socket.onclose не затирает статус сообщением «Отключено» (исключение из комнаты). */
 let pendingKickedDisconnectStatus = null;
@@ -1382,7 +1380,7 @@ async function handleSignal(from, payload) {
 
 function connectSocket() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const wsUrl = `${protocol}://${location.host}`;
+  const wsUrl = `${protocol}://${location.host}/ws`;
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
@@ -1433,12 +1431,6 @@ function connectSocket() {
 
     switch (message.type) {
       case "hello":
-        serverChatMessageOps = message.chatMessageOps === true;
-        if (joinedRoom && serverChatMessageOps === false) {
-          setStatus(
-            `${myNickname ? `В сети как ${myNickname}. ` : ""}На сервере нет правок чата — обновите backend (см. docker-compose: том ./server или rebuild).`
-          );
-        }
         break;
       case "join-accepted":
         myNickname = message.nickname;
@@ -1453,14 +1445,7 @@ function connectSocket() {
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
           sessionStorage.setItem(SS_JOINED, "1");
           sessionStorage.setItem(SS_NICK, message.nickname);
-          {
-            let line = `В сети как ${message.nickname}`;
-            if (serverChatMessageOps === false) {
-              line +=
-                ". Сервер устарел: нет изменения/удаления сообщений — перезапустите с актуальным server/.";
-            }
-            setStatus(line);
-          }
+          setStatus(`В сети как ${message.nickname}`);
           if (micBtn) {
             micBtn.disabled = false;
           }
@@ -1561,22 +1546,14 @@ function connectSocket() {
           awaitingAdminVerifyResponse = false;
           pendingAdminSecretAttempt = null;
           if (adminAuthError) {
-            let errText = message.message || "Ошибка.";
-            if (/unknown message type:\s*admin-verify/i.test(errText)) {
-              errText =
-                "Сервер старой версии (нет admin-verify). Остановите процесс и снова запустите npm start в папке сервера или выполните docker compose build && docker compose up.";
-            }
+            const errText = message.message || "Ошибка.";
             adminAuthError.textContent = errText;
             adminAuthError.hidden = false;
           }
           break;
         }
         {
-          let errText2 = message.message || "Ошибка.";
-          if (/unknown message type:\s*chat-(?:edit|delete)/i.test(errText2)) {
-            errText2 =
-              "Сервер без правок чата (старый процесс). Перезапустите: npm start из папки local-voicechat или docker compose down && docker compose up (в compose смонтирован ./server).";
-          }
+          const errText2 = message.message || "Ошибка.";
           setStatus(`Ошибка: ${errText2}`);
         }
         break;

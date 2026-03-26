@@ -1,68 +1,41 @@
-# zalupa228local
+# local-voicechat (C++ only)
 
-Локальный голосовой чат в браузере: WebRTC mesh + WebSocket signaling, **текстовый чат**. С **MongoDB** история сохраняется на диск; **без MongoDB** чат работает в **памяти** (до перезапуска сервера).
+Локальный голосовой чат в браузере: WebRTC mesh + WebSocket signaling + текстовый чат.
 
-## Требования
+Проект запускается **только через C++ сервер** (`Drogon`).
 
-- Node.js 18+ (рекомендуется LTS)
-- Браузер с поддержкой WebRTC (Chrome/Edge/Firefox)
-- **MongoDB** (опционально для `npm start`): если недоступна, используется in-memory чат; для постоянного хранения — `docker compose` или локальный Mongo
+## Быстрый старт
 
-## Запуск хоста (без Docker)
+1. В корне проекта собрать live сервер:
+   - `npm run cpp:build-live`
+2. Запустить live сервер:
+   - `npm run cpp:run-live`
+3. Открыть фронт:
+   - `http://127.0.0.1:3010`
+4. Проверка health:
+   - `http://127.0.0.1:3010/health`
 
-1. Откройте терминал в каталоге проекта `zalupa228local` (или в папке с этим репозиторием).
-2. (Опционально) Запустите MongoDB или задайте **`MONGODB_URI`**. Без БД сервер всё равно поднимется.
-3. Установите зависимости:
-   - `npm install`
-4. Запустите сервер:
-   - `npm start`
-5. Сервер поднимется на порту `3000` (или в `PORT`, если задана переменная окружения).
-6. Дополнительно поднимается **HTTPS** на порту `3443` (или `HTTPS_PORT`, если задана). Используйте его для доступа с других устройств в сети — микрофон в браузере требует **HTTPS** или `localhost`.
-7. **Админ-панель** (исключение участников): пароль по умолчанию `admin123`; в проде задайте **`ADMIN_PANEL_PASSWORD`** в окружении.
+## Тесты совместимости
 
-## Подключение клиентов
+- `npm run cpp:test:compat`
 
-На **этом же компьютере** (микрофон разрешён):
+Команда запускает:
+- `local_voicechat_contract_smoke`
+- `local_voicechat_stub_live_e2e`
+- `local_voicechat_ws_event_contract`
+- `local_voicechat_frontend_compat_e2e`
 
-- `http://localhost:3000` или `http://127.0.0.1:3000`
+## Переменные окружения
 
-С **другого телефона/ПК в той же Wi‑Fi** (откройте по HTTPS и один раз примите предупреждение о самоподписанном сертификате):
+- `ADMIN_PANEL_PASSWORD` (по умолчанию `admin123`)
+- `SERVICE_NAME` (по умолчанию `local_voicechat_backend_cpp`)
+- `BIND_HOST` (по умолчанию `0.0.0.0`)
+- `PORT` (по умолчанию `3010` для `npm run cpp:run-live`)
+- `SERVER_ADAPTER` (`mock` или `stub-live`, для live используется `stub-live`)
+- `STATIC_ROOT` (по умолчанию `server/public`)
 
-- `https://<host-ip>:3443`
+## Маршруты live сервера
 
-Пример:
-
-- `https://192.168.0.199:3443`
-
-HTTP по IP (`http://192.168.0.199:3000`) страница откроется, но **микрофон** в таком режиме браузер обычно блокирует — используйте HTTPS-URL выше.
-
-## Как использовать
-
-1. Введите уникальный `nickname` и нажмите `Join`.
-2. Разрешите доступ к микрофону.
-3. Кнопка `Mic: On/Off` включает или выключает отправку вашего аудио.
-4. В списке участников можно локально выключить звук конкретного собеседника:
-   - `Mute remote` / `Unmute remote`
-   - Это влияет только на ваш клиент (`audio.muted`), других пользователей не затрагивает.
-5. Блок **Chat**: сообщения сохраняются в MongoDB и видны всем; при входе подгружается история (последние 100 сообщений).
-
-## Docker (приложение + MongoDB одной командой)
-
-Нужны [Docker](https://docs.docker.com/get-docker/) и Docker Compose (обычно входит в Docker Desktop).
-
-Из корня проекта одна команда поднимает **веб-приложение** и **MongoDB** с постоянным томом данных:
-
-- `docker compose up --build`
-- или `npm run docker:up` — то же самое
-- или скрипт **PowerShell (Windows):** `.\scripts\run-docker.ps1`
-- или **Linux/macOS:** `chmod +x scripts/run-docker.sh` и `./scripts/run-docker.sh`
-
-Порты наружу у приложения: **3000** (HTTP), **3443** (HTTPS). База слушает только внутри сети Compose (порт MongoDB наружу не пробрасывается).
-
-В контейнере в сертификат попадают только **сетевые интерфейсы контейнера**. Чтобы с телефона по адресу `https://<ваш-LAN-IP>:3443` сертификат совпадал с этим IP, задайте IP хоста в LAN:
-
-- PowerShell: `.\scripts\run-docker.ps1 -LanIp 192.168.0.199`
-- bash: `LAN_IP=192.168.0.199 ./scripts/run-docker.sh`
-- вручную: `set CERT_EXTRA_IPS=192.168.0.199` (cmd) или `$env:CERT_EXTRA_IPS="192.168.0.199"` (PowerShell), затем `docker compose up --build`
-
-Переменная `CERT_EXTRA_IPS` — через запятую можно указать несколько IP.
+- `GET /` -> `server/public/index.html`
+- `GET /health` -> health JSON
+- `WS /ws` -> signaling/chat websocket
