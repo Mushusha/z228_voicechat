@@ -5,6 +5,7 @@ const SS_NICK = "zalupa_vc_nick";
 const LS_THEME = "zalupa_theme";
 const LS_PEER_AUDIO = "zalupa228_peer_audio";
 const LS_MIC_ENABLED = "zalupa228_mic_on";
+const LS_CHANNELS_CACHE = "zalupa228_channels_cache_v1";
 
 /** Быстрые реакции (пикер «＋»); остальные эмодзи появляются, если уже есть на сервере. */
 const QUICK_REACTION_EMOJIS = [
@@ -37,12 +38,12 @@ function clearRejoinHint() {
 function leaveRoom() {
   clearRejoinHint();
   forceDisconnectClient();
-  joinBtn.disabled = false;
-  nicknameInput.disabled = false;
   if (chatLog) {
     chatLog.innerHTML = "";
   }
   setStatus("Вы вышли из комнаты.");
+  syncAuthUi();
+  renderChannelPanels();
 }
 
 /** Закрытие вкладки / уход со страницы: сразу закрыть сигнальный сокет, чтобы сервер разослал peer-left. */
@@ -90,9 +91,7 @@ function forceDisconnectClient() {
     micToggleBottom.disabled = true;
   }
   setChatEnabled(false);
-  if (leaveBtn) {
-    leaveBtn.disabled = true;
-  }
+  syncAuthUi();
 }
 
 function setCookie(name, value, maxAgeSec) {
@@ -118,6 +117,8 @@ function getCookie(name) {
 const nicknameInput = document.getElementById("nickname");
 const joinBtn = document.getElementById("joinBtn");
 const leaveBtn = document.getElementById("leaveBtn");
+const toolbarEl = document.querySelector(".toolbar");
+const channelGroupsEl = document.getElementById("channelGroups");
 const micBtn = document.getElementById("micBtn");
 const micBtnIcon = document.getElementById("micBtnIcon");
 const chatMenuBtn = document.getElementById("chatMenuBtn");
@@ -138,8 +139,7 @@ const adminJoinHint = document.getElementById("adminJoinHint");
 const adminLogoutBtn = document.getElementById("adminLogoutBtn");
 const adminCreateTextChannelBtn = document.getElementById("adminCreateTextChannelBtn");
 const adminCreateVoiceChannelBtn = document.getElementById("adminCreateVoiceChannelBtn");
-const adminRenameChannelBtn = document.getElementById("adminRenameChannelBtn");
-const adminDeleteChannelBtn = document.getElementById("adminDeleteChannelBtn");
+const adminChannelsList = document.getElementById("adminChannelsList");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
 const chatLog = document.getElementById("chatLog");
@@ -238,13 +238,39 @@ let cachedAdminSecret = null;
 let adminServerPeers = [];
 let pendingAdminSecretAttempt = null;
 let awaitingAdminVerifyResponse = false;
-let textChannels = [];
-let voiceChannels = [];
+let textChannels = [{ id: "text-general", name: "Общий текст" }];
+let voiceChannels = [{ id: "voice-general", name: "Общий голос" }];
 let currentTextChannel = "text-general";
 let currentVoiceChannel = "voice-general";
+let textDetached = false;
 let allSoundEnabled = true;
 let allSoundPercent = 100;
 let voiceMembersByChannel = {};
+
+function syncAuthUi() {
+  const hasSavedNick =
+    Boolean(getCookie(NICK_COOKIE)) ||
+    Boolean(sessionStorage.getItem(SS_NICK)) ||
+    sessionStorage.getItem(SS_JOINED) === "1";
+  if (toolbarEl) {
+    toolbarEl.hidden = joinedRoom || hasSavedNick;
+  }
+  if (channelGroupsEl) {
+    channelGroupsEl.hidden = !joinedRoom && !hasSavedNick;
+  }
+  if (joinBtn) {
+    joinBtn.hidden = joinedRoom;
+    joinBtn.disabled = joinedRoom;
+  }
+  if (leaveBtn) {
+    leaveBtn.hidden = !joinedRoom;
+    leaveBtn.disabled = !joinedRoom;
+  }
+  if (nicknameInput) {
+    nicknameInput.hidden = joinedRoom || hasSavedNick;
+    nicknameInput.disabled = joinedRoom;
+  }
+}
 
 function enqueueRtc(fn) {
   rtcChain = rtcChain.then(fn).catch((e) => console.error("WebRTC queue:", e));
@@ -288,11 +314,9 @@ function seedPeerAudioFromStorage(peerNickname) {
   } else {
     volumePercentByPeer.set(peerNickname, 100);
   }
-  if (row && row.m === true) {
-    hearByPeer.set(peerNickname, false);
-  } else {
-    hearByPeer.set(peerNickname, true);
-  }
+  // Всегда стартуем со слышимым собеседником: старые mute-настройки
+  // могли "залипать" между сессиями и создавали эффект "не слышу никого".
+  hearByPeer.set(peerNickname, true);
 }
 
 function persistPeerAudioSettings() {
@@ -363,9 +387,20 @@ function applyChannelsState(message) {
   if (message.voiceMembers && typeof message.voiceMembers === "object") {
     voiceMembersByChannel = message.voiceMembers;
   }
+  try {
+    localStorage.setItem(
+      LS_CHANNELS_CACHE,
+      JSON.stringify({
+        textChannels,
+        voiceChannels,
+      })
+    );
+  } catch (_) {}
   renderChannelSelect(textChannelSelect, textChannels, currentTextChannel);
   renderChannelSelect(voiceChannelSelect, voiceChannels, currentVoiceChannel);
   renderChannelPanels();
+  renderParticipants();
+  renderAdminChannelsList();
 }
 
 function renderChannelPanels() {
@@ -375,14 +410,32 @@ function renderChannelPanels() {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "channel-btn" + (ch.id === currentTextChannel ? " active" : "");
-      btn.textContent = `# ${ch.name}`;
+      const isCurrent = !textDetached && ch.id === currentTextChannel;
+      btn.className = "channel-btn" + (isCurrent && joinedRoom ? " active" : "");
+      btn.textContent = ch.name;
       btn.addEventListener("click", () => {
+        if (joinedRoom && ch.id === currentTextChannel && !textDetached) {
+          textDetached = true;
+          setChatEnabled(false);
+          if (chatLog) {
+            chatLog.innerHTML = "";
+          }
+          setStatus("Вы вышли из текстового канала (голос остаётся).");
+          renderChannelPanels();
+          return;
+        }
+        textDetached = false;
         currentTextChannel = ch.id;
+        if (!joinedRoom) {
+          void join({ fromAutoRejoin: true });
+          return;
+        }
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "set-text-channel", channelId: ch.id }));
           if (chatLog) chatLog.innerHTML = "";
         }
+        setChatEnabled(true);
+        renderChannelPanels();
       });
       li.appendChild(btn);
       textChannelsList.appendChild(li);
@@ -394,13 +447,28 @@ function renderChannelPanels() {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "channel-btn" + (ch.id === currentVoiceChannel ? " active" : "");
-      btn.textContent = `🔊 ${ch.name}`;
+      const isCurrent = ch.id === currentVoiceChannel;
+      btn.className = "channel-btn" + (isCurrent && joinedRoom ? " active" : "");
+      btn.textContent = ch.name;
       btn.addEventListener("click", () => {
+        if (joinedRoom && ch.id === currentVoiceChannel) {
+          currentVoiceChannel = ch.id;
+          leaveRoom();
+          return;
+        }
         currentVoiceChannel = ch.id;
+        if (!joinedRoom) {
+          // Вход через голос не должен автоматически открывать текст.
+          textDetached = true;
+        }
+        if (!joinedRoom) {
+          void join({ fromAutoRejoin: true });
+          return;
+        }
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "set-voice-channel", channelId: ch.id }));
         }
+        renderChannelPanels();
       });
       li.appendChild(btn);
       const members = Array.isArray(voiceMembersByChannel[ch.id]) ? voiceMembersByChannel[ch.id] : [];
@@ -866,6 +934,10 @@ function renderChatHistory(messages) {
 }
 
 function sendChat() {
+  if (textDetached) {
+    setStatus("Вы вне текстового канала. Выберите текстовый канал.");
+    return;
+  }
   if (!joinedRoom) {
     setStatus("Сначала войдите в комнату.");
     return;
@@ -1078,6 +1150,7 @@ function setMicButtonState() {
   if (micToggleBottom) {
     micToggleBottom.textContent = micEnabled ? "Микро: вкл" : "Микро: выкл";
   }
+  updateDockIcons();
 }
 
 function setMicEnabled(enabled) {
@@ -1093,6 +1166,50 @@ function setMicEnabled(enabled) {
   setMicButtonState();
 }
 
+function ensureAudibleDefaultsAfterJoin() {
+  allSoundEnabled = true;
+  if (allSoundToggleBtn) {
+    allSoundToggleBtn.textContent = "Звук всех: вкл";
+  }
+  for (const peerNickname of peers.keys()) {
+    hearByPeer.set(peerNickname, true);
+    applyPeerGain(peerNickname);
+    const a = remoteAudioByPeer.get(peerNickname);
+    if (a && !peerAudioGraphs.has(peerNickname)) {
+      a.muted = false;
+      a.volume = Math.min(1, (volumePercentByPeer.get(peerNickname) ?? 100) / 100);
+    }
+  }
+  updateDockIcons();
+}
+
+function updateDockIcons() {
+  if (micDockBtn) {
+    micDockBtn.textContent = "🎙️";
+    micDockBtn.classList.toggle("is-off", !micEnabled);
+  }
+  if (soundDockBtn) {
+    soundDockBtn.textContent = "🎧";
+    soundDockBtn.classList.toggle("is-off", !allSoundEnabled);
+  }
+}
+
+function applyPeerMutedState(peerNickname, isMuted) {
+  hearByPeer.set(peerNickname, !isMuted);
+  applyPeerGain(peerNickname);
+  const a = remoteAudioByPeer.get(peerNickname);
+  if (a) {
+    a.muted = isMuted;
+  }
+}
+
+function applyAllMutedState(isMuted) {
+  allSoundEnabled = !isMuted;
+  for (const p of peers.keys()) {
+    applyPeerMutedState(p, isMuted);
+  }
+}
+
 function closeMiniPopup() {
   if (miniPopup) {
     miniPopup.hidden = true;
@@ -1100,100 +1217,64 @@ function closeMiniPopup() {
   }
 }
 
-async function getAudioDevices() {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return {
-      input: devices.filter((d) => d.kind === "audioinput"),
-      output: devices.filter((d) => d.kind === "audiooutput"),
-    };
-  } catch (_) {
-    return { input: [], output: [] };
-  }
-}
-
-async function replaceInputDevice(deviceId) {
-  if (!deviceId) return;
-  const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
-  const track = s.getAudioTracks()[0];
-  if (!track) return;
-  if (localStream) {
-    localStream.getTracks().forEach((t) => t.stop());
-  }
-  localStream = s;
-  for (const pc of peers.values()) {
-    const sender = pc.getSenders().find((x) => x.track && x.track.kind === "audio");
-    if (sender) {
-      await sender.replaceTrack(track);
-    }
-  }
-  setMicEnabled(micEnabled);
-}
-
-function applyOutputDeviceToAudios(deviceId) {
-  for (const a of remoteAudioByPeer.values()) {
-    if (typeof a.setSinkId === "function") {
-      a.setSinkId(deviceId).catch(() => {});
-    }
-  }
-}
-
 async function openAudioPopup(anchorEl, peerNickname = "") {
   if (!miniPopup || !anchorEl) return;
   const rect = anchorEl.getBoundingClientRect();
-  const devices = await getAudioDevices();
   const current = peerNickname ? getPeerVolumePercent(peerNickname) : allSoundPercent;
+  const muted = peerNickname ? hearByPeer.get(peerNickname) === false : !allSoundEnabled;
   miniPopup.innerHTML = `
     <div><strong>${peerNickname ? peerNickname : "Аудио"}</strong></div>
-    <label>Input volume</label>
-    <input id="miniInVol" type="range" min="0" max="200" value="${micEnabled ? 100 : 0}" />
-    <label>Output volume</label>
+    <label>Громкость</label>
     <input id="miniOutVol" type="range" min="0" max="200" value="${current}" />
-    <label>Input device</label>
-    <select id="miniInDev">${devices.input
-      .map((d) => `<option value="${d.deviceId}">${d.label || "input"}</option>`)
-      .join("")}</select>
-    <label>Output device</label>
-    <select id="miniOutDev">${devices.output
-      .map((d) => `<option value="${d.deviceId}">${d.label || "output"}</option>`)
-      .join("")}</select>
+    <button id="miniMuteBtn" type="button" class="mini-mute-btn ${muted ? "is-muted" : ""}">
+      ${muted ? "Включить звук" : "Мут"}
+    </button>
   `;
   miniPopup.style.left = `${Math.max(8, rect.left)}px`;
-  miniPopup.style.top = `${Math.max(8, rect.top - 220)}px`;
+  miniPopup.style.top = `${Math.max(8, rect.top - 140)}px`;
   miniPopup.hidden = false;
+  miniPopup.addEventListener("click", (ev) => ev.stopPropagation(), { once: true });
   const outVol = miniPopup.querySelector("#miniOutVol");
-  const inVol = miniPopup.querySelector("#miniInVol");
-  const inDev = miniPopup.querySelector("#miniInDev");
-  const outDev = miniPopup.querySelector("#miniOutDev");
-  if (inVol) {
-    inVol.addEventListener("input", () => {
-      const on = Number(inVol.value) > 0;
-      setMicEnabled(on);
-    });
-  }
+  const miniMuteBtn = miniPopup.querySelector("#miniMuteBtn");
   if (outVol) {
     outVol.addEventListener("input", () => {
       const v = Math.max(0, Math.min(200, Number(outVol.value) || 0));
       if (peerNickname) {
         volumePercentByPeer.set(peerNickname, v);
         applyPeerGain(peerNickname);
+        const a = remoteAudioByPeer.get(peerNickname);
+        if (a) {
+          a.volume = Math.min(1, v / 100);
+        }
         persistPeerAudioSettings();
       } else {
         allSoundPercent = v;
         for (const p of peers.keys()) {
           volumePercentByPeer.set(p, v);
           applyPeerGain(p);
+          const a = remoteAudioByPeer.get(p);
+          if (a) {
+            a.volume = Math.min(1, v / 100);
+          }
         }
       }
     });
   }
-  if (inDev) {
-    inDev.addEventListener("change", async () => {
-      await replaceInputDevice(inDev.value);
+  if (miniMuteBtn) {
+    miniMuteBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const nowMuted = miniMuteBtn.classList.toggle("is-muted");
+      miniMuteBtn.textContent = nowMuted ? "Включить звук" : "Мут";
+      if (peerNickname) {
+        applyPeerMutedState(peerNickname, nowMuted);
+        persistPeerAudioSettings();
+      } else {
+        applyAllMutedState(nowMuted);
+      }
+      renderParticipants();
+      updateDockIcons();
     });
-  }
-  if (outDev) {
-    outDev.addEventListener("change", () => applyOutputDeviceToAudios(outDev.value));
   }
 }
 
@@ -1277,14 +1358,50 @@ function hookRemoteStream(peerNickname, stream) {
 
 function renderParticipants() {
   participantsEl.innerHTML = "";
-
-  for (const peerNickname of Array.from(peers.keys()).sort()) {
+  const peerSet = new Set(Array.from(peers.keys()));
+  if (joinedRoom) {
+    const serverList = Array.isArray(voiceMembersByChannel[currentVoiceChannel])
+      ? voiceMembersByChannel[currentVoiceChannel]
+      : [];
+    for (const n of serverList) {
+      if (n && n !== myNickname) {
+        peerSet.add(n);
+      }
+    }
+  } else {
+    for (const list of Object.values(voiceMembersByChannel)) {
+      if (!Array.isArray(list)) {
+        continue;
+      }
+      for (const n of list) {
+        if (n) {
+          peerSet.add(n);
+        }
+      }
+    }
+  }
+  for (const peerNickname of Array.from(peerSet).sort((a, b) => a.localeCompare(b, "ru"))) {
     const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "peer-row";
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
     nameSpan.textContent = peerNickname;
-    li.appendChild(nameSpan);
+    row.appendChild(nameSpan);
+    const audioBtn = document.createElement("button");
+    audioBtn.type = "button";
+    audioBtn.className = "peer-audio-btn";
+    audioBtn.textContent = isMuted ? "🔇" : "🔊";
+    audioBtn.classList.toggle("is-muted", isMuted);
+    audioBtn.setAttribute("aria-label", isMuted ? `Включить звук ${peerNickname}` : `Настройки звука ${peerNickname}`);
+    audioBtn.setAttribute("title", isMuted ? "Пользователь заглушён" : "Настройки звука");
+    audioBtn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      await openAudioPopup(audioBtn, peerNickname);
+    });
+    row.appendChild(audioBtn);
+    li.appendChild(row);
     li.title = "Нажмите: громкость / mute";
     li.style.cursor = "pointer";
     li.addEventListener("click", async () => {
@@ -1328,6 +1445,7 @@ function updateAdminModalLayout() {
   if (adminPanelBody) {
     adminPanelBody.hidden = !authed;
   }
+  renderAdminChannelsList();
   updateAdminJoinHint();
 }
 
@@ -1410,6 +1528,72 @@ function renderAdminParticipantList() {
     });
     li.appendChild(btn);
     adminParticipantsList.appendChild(li);
+  }
+}
+
+function renderAdminChannelsList() {
+  if (!adminChannelsList) {
+    return;
+  }
+  adminChannelsList.innerHTML = "";
+  if (!cachedAdminSecret) {
+    return;
+  }
+  const rows = [
+    ...textChannels.map((ch) => ({ kind: "text", ch })),
+    ...voiceChannels.map((ch) => ({ kind: "voice", ch })),
+  ];
+  if (rows.length === 0) {
+    const li = document.createElement("li");
+    li.className = "admin-participant-hint";
+    li.textContent = "Каналы не найдены.";
+    adminChannelsList.appendChild(li);
+    return;
+  }
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "admin-channel-row";
+    const left = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "admin-channel-name";
+    name.textContent = row.ch.name;
+    const meta = document.createElement("div");
+    meta.className = "admin-channel-meta";
+    meta.textContent = row.kind === "voice" ? "голос" : "текст";
+    left.appendChild(name);
+    left.appendChild(meta);
+    const actions = document.createElement("div");
+    actions.className = "admin-channel-actions";
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "btn-channel-action";
+    renameBtn.textContent = "Переименовать";
+    renameBtn.addEventListener("click", () => {
+      const nextName = (prompt("Новое имя канала:", row.ch.name) || "").trim();
+      if (!nextName) {
+        return;
+      }
+      sendAdminChannelOp("admin-channel-rename", row.kind, row.ch.id, nextName);
+    });
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn-channel-action btn-channel-action-danger";
+    deleteBtn.textContent = "Удалить";
+    deleteBtn.disabled = row.ch.id === "text-general" || row.ch.id === "voice-general";
+    deleteBtn.addEventListener("click", () => {
+      if (deleteBtn.disabled) {
+        return;
+      }
+      if (!confirm(`Удалить канал "${row.ch.name}"?`)) {
+        return;
+      }
+      sendAdminChannelOp("admin-channel-delete", row.kind, row.ch.id, "");
+    });
+    actions.appendChild(renameBtn);
+    actions.appendChild(deleteBtn);
+    li.appendChild(left);
+    li.appendChild(actions);
+    adminChannelsList.appendChild(li);
   }
 }
 
@@ -1581,6 +1765,9 @@ function connectSocket() {
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
+    try {
+      socket.send(JSON.stringify({ type: "get-channels" }));
+    } catch (_) {}
     const nick = (nicknameInput && nicknameInput.value.trim()) || myNickname;
     if (!nick) {
       setStatus("Введите ник и нажмите «Войти» снова.");
@@ -1639,12 +1826,7 @@ function connectSocket() {
         break;
       case "join-accepted":
         myNickname = message.nickname;
-        joinBtn.disabled = true;
-        nicknameInput.disabled = true;
         nicknameInput.value = message.nickname;
-        if (leaveBtn) {
-          leaveBtn.disabled = false;
-        }
         enqueueRtc(async () => {
           joinedRoom = true;
           setCookie(NICK_COOKIE, myNickname || message.nickname, NICK_COOKIE_MAX_AGE);
@@ -1664,7 +1846,12 @@ function connectSocket() {
           if (micToggleBottom) {
             micToggleBottom.disabled = false;
           }
-          setChatEnabled(true);
+          setChatEnabled(!textDetached);
+          syncAuthUi();
+          ensureAudibleDefaultsAfterJoin();
+          // Сразу обновляем список участников после входа:
+          // он должен быть виден даже до установки p2p-соединений.
+          renderParticipants();
           for (const peerNickname of message.peers) {
             await createPeerConnection(peerNickname, false);
           }
@@ -1676,6 +1863,9 @@ function connectSocket() {
         renderChatHistory(message.messages || []);
         break;
       case "chat-message":
+        if (textDetached) {
+          break;
+        }
         if (message.channelId && message.channelId !== currentTextChannel) {
           break;
         }
@@ -1693,18 +1883,27 @@ function connectSocket() {
         });
         break;
       case "chat-message-updated":
+        if (textDetached) {
+          break;
+        }
         if (message.channelId && message.channelId !== currentTextChannel) {
           break;
         }
         applyChatMessageUpdated(message);
         break;
       case "chat-message-reactions":
+        if (textDetached) {
+          break;
+        }
         if (message.channelId && message.channelId !== currentTextChannel) {
           break;
         }
         applyChatMessageReactions(message);
         break;
       case "chat-message-deleted":
+        if (textDetached) {
+          break;
+        }
         if (message.channelId && message.channelId !== currentTextChannel) {
           break;
         }
@@ -1731,13 +1930,9 @@ function connectSocket() {
       case "join-rejected":
         joinedRoom = false;
         setStatus(`Вход отклонён: ${message.reason}`);
-        joinBtn.disabled = false;
-        nicknameInput.disabled = false;
         setChatEnabled(false);
-        if (leaveBtn) {
-          leaveBtn.disabled = true;
-        }
         clearRejoinHint();
+        syncAuthUi();
         updateAdminJoinHint();
         break;
       case "peer-joined":
@@ -1837,11 +2032,7 @@ function connectSocket() {
         micToggleBottom.disabled = true;
       }
       setChatEnabled(false);
-      joinBtn.disabled = false;
-      nicknameInput.disabled = false;
-      if (leaveBtn) {
-        leaveBtn.disabled = true;
-      }
+      syncAuthUi();
       if (chatLog) {
         chatLog.innerHTML = "";
       }
@@ -1851,6 +2042,43 @@ function connectSocket() {
     } catch (_) {
       /* страница может уже выгружаться */
     }
+  };
+}
+
+function requestChannelsSnapshot() {
+  let received = false;
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${protocol}://${location.host}`;
+  const tmp = new WebSocket(wsUrl);
+  tmp.onopen = () => {
+    try {
+      tmp.send(JSON.stringify({ type: "get-channels" }));
+    } catch (_) {}
+  };
+  tmp.onmessage = (event) => {
+    let message = null;
+    try {
+      message = JSON.parse(event.data);
+    } catch (_) {}
+    if (message && message.type === "channels-state") {
+      received = true;
+      applyChannelsState(message);
+      try {
+        tmp.close();
+      } catch (_) {}
+    }
+  };
+  tmp.onclose = () => {
+    if (!received && !joinedRoom) {
+      setTimeout(() => {
+        requestChannelsSnapshot();
+      }, 900);
+    }
+  };
+  tmp.onerror = () => {
+    try {
+      tmp.close();
+    } catch (_) {}
   };
 }
 
@@ -1883,6 +2111,7 @@ function openAdminModal() {
   updateAdminModalLayout();
   if (cachedAdminSecret) {
     requestAdminPeerList();
+    renderAdminChannelsList();
   } else {
     renderAdminParticipantList();
   }
@@ -1897,6 +2126,10 @@ function closeAdminModal() {
 if (chatMenuBtn && chatDropdown) {
   chatMenuBtn.addEventListener("click", (e) => {
     e.stopPropagation();
+    if (!joinedRoom) {
+      setStatus("Сначала войдите в чат.");
+      return;
+    }
     setChatMenuOpen(chatDropdown.hidden);
   });
 }
@@ -1941,7 +2174,11 @@ if (menuAdminBtn) {
 if (menuProfileBtn) {
   menuProfileBtn.addEventListener("click", () => {
     if (profileNameInput) {
-      profileNameInput.value = nicknameInput ? nicknameInput.value.trim() : "";
+      profileNameInput.value =
+        (myNickname && String(myNickname).trim()) ||
+        (nicknameInput && nicknameInput.value ? nicknameInput.value.trim() : "") ||
+        getCookie(NICK_COOKIE) ||
+        "";
     }
     openSimpleModal(profileModal);
     closeChatMenu();
@@ -1965,11 +2202,20 @@ if (profileSaveBtn) {
       setStatus("Введите имя.");
       return;
     }
+    const prevJoined = joinedRoom;
     if (nicknameInput) {
       nicknameInput.value = newName;
     }
+    myNickname = newName;
+    sessionStorage.setItem(SS_NICK, newName);
     setCookie(NICK_COOKIE, newName, NICK_COOKIE_MAX_AGE);
     closeSimpleModal(profileModal);
+    if (prevJoined) {
+      leaveRoom();
+      await join({ fromAutoRejoin: false });
+      setStatus(`Имя изменено: ${newName}`);
+      return;
+    }
     if (!joinedRoom) {
       await join({ fromAutoRejoin: false });
     }
@@ -2047,25 +2293,6 @@ if (adminCreateVoiceChannelBtn) {
     }
   });
 }
-if (adminRenameChannelBtn) {
-  adminRenameChannelBtn.addEventListener("click", () => {
-    const kind = (prompt("Тип канала: text или voice", "text") || "").trim().toLowerCase();
-    const id = (prompt("ID канала:", "") || "").trim();
-    const name = (prompt("Новое имя (кириллица можно):", "") || "").trim();
-    if ((kind === "text" || kind === "voice") && id && name) {
-      sendAdminChannelOp("admin-channel-rename", kind, id, name);
-    }
-  });
-}
-if (adminDeleteChannelBtn) {
-  adminDeleteChannelBtn.addEventListener("click", () => {
-    const kind = (prompt("Тип канала: text или voice", "text") || "").trim().toLowerCase();
-    const id = (prompt("ID канала для удаления:", "") || "").trim();
-    if ((kind === "text" || kind === "voice") && id) {
-      sendAdminChannelOp("admin-channel-delete", kind, id, "");
-    }
-  });
-}
 
 if (adminModalClose) {
   adminModalClose.addEventListener("click", () => {
@@ -2122,8 +2349,7 @@ async function join(options = {}) {
       host === "localhost" || host === "127.0.0.1"
         ? " На localhost HTTP допустим, иначе https://localhost:" + httpsPort + "/"
         : ` Откройте https://${host}:${httpsPort}/ и примите сертификат.`;
-    setStatus("Микрофон нужен в безопасном контексте (HTTPS или localhost)." + httpsHint);
-    return;
+    setStatus("Микрофон отключён: нужен HTTPS/localhost." + httpsHint + " Текстовый чат доступен.");
   }
 
   forceDisconnectClient();
@@ -2132,28 +2358,27 @@ async function join(options = {}) {
   nicknameInput.disabled = false;
 
   try {
-    await resumeAudioContextIfNeeded();
-    localStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
-    setMicEnabled(localStorage.getItem(LS_MIC_ENABLED) !== "0");
+    if (window.isSecureContext) {
+      await resumeAudioContextIfNeeded();
+      localStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
+      setMicEnabled(localStorage.getItem(LS_MIC_ENABLED) !== "0");
+    } else {
+      localStream = null;
+      setMicEnabled(false);
+    }
     connectSocket();
   } catch (error) {
     console.error(error);
-    if (!fromAutoRejoin) {
-      clearRejoinHint();
-    }
-    if (fromAutoRejoin) {
-      setStatus(
-        "После обновления страницы нажмите «Войти» ещё раз — браузеру нужен жест для доступа к микрофону."
-      );
-    } else if (error && error.name === "NotAllowedError") {
-      setStatus("Доступ к микрофону запрещён. Разрешите в настройках сайта.");
+    localStream = null;
+    setMicEnabled(false);
+    if (error && error.name === "NotAllowedError") {
+      setStatus("Микрофон запрещён. Подключаю только текстовый чат.");
     } else if (error && error.name === "NotFoundError") {
-      setStatus("Микрофон не найден.");
+      setStatus("Микрофон не найден. Подключаю только текстовый чат.");
     } else {
-      setStatus(`Нет доступа к микрофону (${error?.name || "ошибка"}).`);
+      setStatus(`Микрофон недоступен (${error?.name || "ошибка"}). Подключаю только текстовый чат.`);
     }
-    joinBtn.disabled = false;
-    nicknameInput.disabled = false;
+    connectSocket();
   }
 }
 
@@ -2190,11 +2415,17 @@ if (micDockBtn) {
 if (soundDockBtn) {
   soundDockBtn.addEventListener("click", () => {
     allSoundEnabled = !allSoundEnabled;
+    // При выключении наушников выключаем и микрофон.
+    // Обратного автovключения микрофона не делаем.
+    if (!allSoundEnabled) {
+      setMicEnabled(false);
+    }
     for (const peerNickname of peers.keys()) {
       hearByPeer.set(peerNickname, allSoundEnabled);
       applyPeerGain(peerNickname);
     }
     renderParticipants();
+    updateDockIcons();
   });
   soundDockBtn.addEventListener("contextmenu", async (e) => {
     e.preventDefault();
@@ -2418,19 +2649,30 @@ if (chatImageBtn && chatImageInput) {
 }
 
 (function initFromStorage() {
-  let c = getCookie(NICK_COOKIE);
-  if (!c) {
-    c = `user-${Math.floor(1000 + Math.random() * 9000)}`;
-    setCookie(NICK_COOKIE, c, NICK_COOKIE_MAX_AGE);
-  }
-  if (nicknameInput && !nicknameInput.value.trim()) {
+  try {
+    const raw = localStorage.getItem(LS_CHANNELS_CACHE);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.textChannels) && parsed.textChannels.length > 0) {
+        textChannels = parsed.textChannels;
+      }
+      if (Array.isArray(parsed?.voiceChannels) && parsed.voiceChannels.length > 0) {
+        voiceChannels = parsed.voiceChannels;
+      }
+    }
+  } catch (_) {}
+  const c = getCookie(NICK_COOKIE);
+  if (nicknameInput && c && !nicknameInput.value.trim()) {
     nicknameInput.value = c;
   }
-  setTimeout(() => {
-    if (!joinedRoom) {
-      void join({ fromAutoRejoin: false });
-    }
-  }, 0);
+  renderChannelPanels();
+  syncAuthUi();
+  requestChannelsSnapshot();
+  if (c && !joinedRoom) {
+    setTimeout(() => {
+      void join({ fromAutoRejoin: true });
+    }, 0);
+  }
 })();
 
 (function trySessionRejoin() {

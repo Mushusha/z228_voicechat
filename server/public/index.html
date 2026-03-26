@@ -65,9 +65,6 @@
         border-right: 1px solid var(--border);
         min-height: 0;
       }
-      .toolbar {
-        display: none;
-      }
       .channel-groups {
         display: flex;
         flex-direction: column;
@@ -89,6 +86,11 @@
       .channel-btn.active {
         border-color: var(--accent);
         background: var(--accent-dim);
+      }
+      .channel-btn.current-offline {
+        border-color: var(--border);
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text-muted);
       }
       .voice-members-preview {
         margin: 4px 0 8px 10px;
@@ -185,6 +187,12 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
+      }
+      .toolbar[hidden] {
+        display: none !important;
+      }
+      .channel-groups[hidden] {
+        display: none !important;
       }
 
       .row {
@@ -331,6 +339,37 @@
       .peer-name.muted-label {
         color: var(--text-muted);
         text-decoration: line-through;
+      }
+      .peer-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .peer-audio-btn {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        line-height: 1;
+        transition: transform 0.16s ease, filter 0.16s ease, border-color 0.16s ease;
+      }
+      .peer-audio-btn:hover {
+        transform: scale(1.06);
+      }
+      .peer-audio-btn.is-muted {
+        border-color: var(--danger);
+        color: var(--danger);
+        animation: mutedPulse 0.6s ease;
+      }
+      @keyframes mutedPulse {
+        0% { transform: scale(1); }
+        35% { transform: scale(1.16); }
+        100% { transform: scale(1); }
       }
 
       .peer-vol-row {
@@ -515,6 +554,55 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         background: var(--input-bg);
+      }
+      .admin-channel-list {
+        list-style: none;
+        margin: 0 0 12px;
+        padding: 0;
+        max-height: 190px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--input-bg);
+      }
+      .admin-channel-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .admin-channel-row:last-child {
+        border-bottom: none;
+      }
+      .admin-channel-name {
+        font-size: 0.875rem;
+        font-weight: 600;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .admin-channel-meta {
+        margin-top: 2px;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+      .admin-channel-actions {
+        display: inline-flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .btn-channel-action {
+        padding: 6px 10px;
+        font-size: 0.75rem;
+        border-radius: 6px;
+      }
+      .btn-channel-action-danger {
+        border-color: var(--danger);
+        color: var(--danger);
+        background: transparent;
       }
 
       .admin-participant-row {
@@ -922,20 +1010,47 @@
         align-items: center;
         justify-content: center;
         font-size: 1.1rem;
+        position: relative;
+      }
+      .icon-btn.is-off {
+        opacity: 0.6;
+        border-color: var(--danger);
+      }
+      .icon-btn.is-off::after {
+        content: "";
+        position: absolute;
+        width: 28px;
+        height: 2px;
+        background: var(--danger);
+        transform: rotate(-45deg);
+        border-radius: 2px;
       }
       .mini-popup {
         position: fixed;
         z-index: 400;
-        min-width: 230px;
+        min-width: 180px;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 10px;
+        padding: 8px;
         box-shadow: 0 10px 26px rgba(0,0,0,.4);
       }
       .mini-popup[hidden] { display: none !important; }
-      .mini-popup label { font-size: .8rem; color: var(--text-muted); display:block; margin-top:8px; }
-      .mini-popup input, .mini-popup select { width: 100%; }
+      .mini-popup label { font-size: .75rem; color: var(--text-muted); display:block; margin-top:6px; }
+      .mini-popup input { width: 100%; }
+      .mini-mute-btn {
+        margin-top: 8px;
+        width: 100%;
+        padding: 7px 10px;
+        border-radius: 8px;
+        font-size: 0.82rem;
+        font-weight: 600;
+      }
+      .mini-mute-btn.is-muted {
+        border-color: var(--danger);
+        color: var(--danger);
+        background: rgba(248, 113, 113, 0.12);
+      }
 
       .chat-footer input[type="text"] {
         flex: 1;
@@ -1006,7 +1121,7 @@
               <p id="status">Не подключено</p>
             </div>
             <div>
-              <div class="channel-groups">
+              <div class="channel-groups" id="channelGroups" hidden>
                 <div>
                   <h2 class="section-title">Текстовые каналы</h2>
                   <ul id="textChannelsList" class="channel-list"></ul>
@@ -1052,7 +1167,7 @@
             </button>
             <div id="chatDropdown" class="chat-dropdown" role="menu" hidden>
               <button type="button" id="menuProfileBtn" class="dropdown-item" role="menuitem">
-                Регистрация / имя
+                Изменить имя
               </button>
               <button type="button" id="menuThemeBtn" class="dropdown-item" role="menuitem">
                 Тема: тёмная
@@ -1095,8 +1210,8 @@
     <div id="miniPopup" class="mini-popup" hidden></div>
     <div id="profileModal" class="modal-overlay" hidden>
       <div class="modal-dialog" role="dialog" aria-modal="true">
-        <h2>Регистрация</h2>
-        <p>Введите имя. Его можно поменять позже в меню.</p>
+        <h2>Изменить имя</h2>
+        <p>Введите новое имя для чата.</p>
         <input id="profileNameInput" type="text" maxlength="30" placeholder="Ваше имя" />
         <div class="admin-modal-actions">
           <button id="profileSaveBtn" type="button" class="btn-primary">Сохранить</button>
@@ -1147,11 +1262,10 @@
           <h3 class="modal-subtitle">Участники</h3>
           <ul id="adminParticipantsList" class="admin-participant-list" aria-label="Список участников"></ul>
           <h3 class="modal-subtitle">Каналы</h3>
+          <ul id="adminChannelsList" class="admin-channel-list" aria-label="Список каналов"></ul>
           <div class="admin-modal-actions">
             <button type="button" id="adminCreateTextChannelBtn">+ Текст</button>
             <button type="button" id="adminCreateVoiceChannelBtn">+ Голос</button>
-            <button type="button" id="adminRenameChannelBtn">Переименовать</button>
-            <button type="button" id="adminDeleteChannelBtn">Удалить</button>
           </div>
           <button type="button" id="adminLogoutBtn" class="btn-text">Выйти из админки</button>
         </div>
@@ -1160,6 +1274,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=36"></script>
+    <script src="./app.js?v=39"></script>
   </body>
 </html>

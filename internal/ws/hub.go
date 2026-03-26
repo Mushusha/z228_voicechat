@@ -65,6 +65,7 @@ type hubState struct {
 	clientsByConn   map[*websocket.Conn]*client
 	connsByNickname map[string]*websocket.Conn
 	writersByConn   map[*websocket.Conn]*connWriter
+	adminByConn     map[*websocket.Conn]bool
 
 	textChannels  map[string]ChatChannel
 	voiceChannels map[string]ChatChannel
@@ -76,6 +77,7 @@ func (h *Hub) getState() *hubState {
 			clientsByConn:   make(map[*websocket.Conn]*client),
 			connsByNickname: make(map[string]*websocket.Conn),
 			writersByConn:   make(map[*websocket.Conn]*connWriter),
+			adminByConn:     make(map[*websocket.Conn]bool),
 			textChannels: map[string]ChatChannel{
 				"text-general": {ID: "text-general", Name: "Общий текст"},
 			},
@@ -101,6 +103,7 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 	st.mu.Unlock()
 
 	h.send(c, HelloPayload{Type: "hello", AdminPanel: true, ChatMessageOps: true})
+	h.onGetChannels(c)
 
 	for {
 		_, raw, err := c.ReadMessage()
@@ -130,6 +133,8 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 		}
 
 		switch msgType {
+		case "get-channels":
+			h.onGetChannels(c)
 		case "join":
 			h.onJoin(c, msg)
 		default:
@@ -184,6 +189,21 @@ func clientShouldNotSend(t string) bool {
 	default:
 		return false
 	}
+}
+
+func (h *Hub) onGetChannels(c *websocket.Conn) {
+	st := h.getState()
+	st.mu.Lock()
+	textChannels := channelsSorted(st.textChannels)
+	voiceChannels := channelsSorted(st.voiceChannels)
+	voiceMembers := voiceMembersByChannelLocked(st)
+	st.mu.Unlock()
+	h.sendMap(c, map[string]any{
+		"type":          "channels-state",
+		"textChannels":  textChannels,
+		"voiceChannels": voiceChannels,
+		"voiceMembers":  voiceMembers,
+	})
 }
 
 func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
@@ -314,11 +334,15 @@ func (h *Hub) onAdminVerify(c *websocket.Conn, msg map[string]any) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль."})
 		return
 	}
+	st := h.getState()
+	st.mu.Lock()
+	st.adminByConn[c] = true
+	st.mu.Unlock()
 	h.sendMap(c, map[string]any{"type": "admin-verify-ok"})
 }
 
 func (h *Hub) onAdminPeers(c *websocket.Conn, msg map[string]any) {
-	if !h.adminPanelSecretOk(msg) {
+	if !h.isAdminConn(c) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
 		return
 	}
@@ -339,7 +363,7 @@ func (h *Hub) onAdminPeers(c *websocket.Conn, msg map[string]any) {
 }
 
 func (h *Hub) onAdminKick(c *websocket.Conn, sender *client, msg map[string]any) {
-	if !h.adminPanelSecretOk(msg) {
+	if !h.isAdminConn(c) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
 		return
 	}
@@ -432,7 +456,7 @@ func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[strin
 }
 
 func (h *Hub) onAdminChannelCreate(c *websocket.Conn, msg map[string]any) {
-	if !h.adminPanelSecretOk(msg) {
+	if !h.isAdminConn(c) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
 		return
 	}
@@ -460,7 +484,7 @@ func (h *Hub) onAdminChannelCreate(c *websocket.Conn, msg map[string]any) {
 }
 
 func (h *Hub) onAdminChannelRename(c *websocket.Conn, msg map[string]any) {
-	if !h.adminPanelSecretOk(msg) {
+	if !h.isAdminConn(c) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
 		return
 	}
@@ -498,7 +522,7 @@ func (h *Hub) onAdminChannelRename(c *websocket.Conn, msg map[string]any) {
 }
 
 func (h *Hub) onAdminChannelDelete(c *websocket.Conn, msg map[string]any) {
-	if !h.adminPanelSecretOk(msg) {
+	if !h.isAdminConn(c) {
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль админ-панели."})
 		return
 	}
@@ -549,6 +573,13 @@ func (h *Hub) adminPanelSecretOk(msg map[string]any) bool {
 	return sec == h.opts.AdminPanelPassword
 }
 
+func (h *Hub) isAdminConn(c *websocket.Conn) bool {
+	st := h.getState()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.adminByConn[c]
+}
+
 func toHistoryPayload(msgs []chatstore.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
@@ -590,6 +621,7 @@ func (h *Hub) leave(c *websocket.Conn) {
 	}
 	delete(st.clientsByConn, c)
 	delete(st.connsByNickname, cl.nickname)
+	delete(st.adminByConn, c)
 	w := st.writersByConn[c]
 	delete(st.writersByConn, c)
 	st.mu.Unlock()
