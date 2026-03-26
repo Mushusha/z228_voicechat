@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type client struct {
 	nickname    string
 	textChannel string
 	voiceChannel string
+	identity    string
 }
 
 type connWriter struct {
@@ -190,18 +192,33 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Nickname is required."})
 		return
 	}
+	identity := connectionIdentity(c)
 
 	st := h.getState()
+retryJoin:
 	st.mu.Lock()
 	if _, ok := st.clientsByConn[c]; ok {
 		st.mu.Unlock()
 		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Already joined."})
 		return
 	}
-	if _, ok := st.connsByNickname[nickname]; ok {
-		st.mu.Unlock()
-		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Nickname already taken."})
-		return
+	if existingConn, ok := st.connsByNickname[nickname]; ok {
+		existingClient := st.clientsByConn[existingConn]
+		switch {
+		case existingConn == nil || existingClient == nil:
+			// stale mapping; remove and proceed with current join
+			delete(st.connsByNickname, nickname)
+		case existingClient.identity == identity:
+			// reconnect from same client identity (same IP): replace stale session
+			st.mu.Unlock()
+			h.leave(existingConn)
+			_ = existingConn.Close()
+			goto retryJoin
+		default:
+			st.mu.Unlock()
+			h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Nickname already taken."})
+			return
+		}
 	}
 
 	textChannel := strings.TrimSpace(asString(msg["textChannel"]))
@@ -213,7 +230,13 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		voiceChannel = "voice-general"
 	}
 
-	st.clientsByConn[c] = &client{ws: c, nickname: nickname, textChannel: textChannel, voiceChannel: voiceChannel}
+	st.clientsByConn[c] = &client{
+		ws:           c,
+		nickname:     nickname,
+		textChannel:  textChannel,
+		voiceChannel: voiceChannel,
+		identity:     identity,
+	}
 	st.connsByNickname[nickname] = c
 
 	peers := make([]string, 0, len(st.connsByNickname))
@@ -641,6 +664,18 @@ func asString(v any) string {
 	s = strings.TrimPrefix(s, "\"")
 	s = strings.TrimSuffix(s, "\"")
 	return strings.TrimSpace(s)
+}
+
+func connectionIdentity(c *websocket.Conn) string {
+	if c == nil || c.RemoteAddr() == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err == nil {
+		return host
+	}
+	// fallback for non host:port values
+	return c.RemoteAddr().String()
 }
 
 func channelsSorted(src map[string]ChatChannel) []ChatChannel {
