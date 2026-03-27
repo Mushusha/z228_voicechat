@@ -53,6 +53,8 @@ async function leaveRoom() {
   setStatus("Вы вышли из комнаты.");
   syncAuthUi();
   renderChannelPanels();
+  renderParticipants();
+  renderOnlineParticipants();
 }
 
 /** Закрытие вкладки / уход со страницы: сразу закрыть сигнальный сокет, чтобы сервер разослал peer-left. */
@@ -158,6 +160,7 @@ const adminCreateVoiceChannelBtn = document.getElementById("adminCreateVoiceChan
 const adminChannelsList = document.getElementById("adminChannelsList");
 const statusEl = document.getElementById("status");
 const participantsEl = document.getElementById("participants");
+const onlineParticipantsEl = document.getElementById("onlineParticipants");
 const chatLog = document.getElementById("chatLog");
 const chatMainEl = document.querySelector(".chat-main");
 const chatInput = document.getElementById("chatInput");
@@ -468,6 +471,7 @@ function applyChannelsState(message) {
   renderChannelSelect(voiceChannelSelect, voiceChannels, currentVoiceChannel);
   renderChannelPanels();
   renderParticipants();
+  renderOnlineParticipants();
   renderAdminChannelsList();
 }
 
@@ -540,17 +544,12 @@ function renderChannelPanels() {
       });
       li.appendChild(btn);
       const members = Array.isArray(voiceMembersByChannel[ch.id]) ? voiceMembersByChannel[ch.id] : [];
-      const inGroup = joinedRoom ? members : [];
-      const info = document.createElement("div");
-      info.className = "voice-members-preview";
-      info.textContent = `В группе: ${inGroup.length ? inGroup.join(", ") : "никого"}`;
-      li.appendChild(info);
-
-      const online = document.createElement("div");
-      online.className = "voice-members-preview";
-      const onlineNames = onlineUsersList();
-      online.textContent = `Онлайн: ${onlineNames.length ? onlineNames.join(", ") : "никого"}`;
-      li.appendChild(online);
+      if (members.length > 0) {
+        const info = document.createElement("div");
+        info.className = "voice-members-preview";
+        info.textContent = members.join(", ");
+        li.appendChild(info);
+      }
       voiceChannelsList.appendChild(li);
     }
   }
@@ -1480,7 +1479,7 @@ function renderParticipants() {
       ? voiceMembersByChannel[currentVoiceChannel]
       : [];
     for (const n of serverList) {
-      if (n && n !== myNickname) {
+      if (n) {
         peerSet.add(n);
       }
     }
@@ -1500,35 +1499,80 @@ function renderParticipants() {
     const li = document.createElement("li");
     const row = document.createElement("div");
     row.className = "peer-row";
+    const nameWrap = document.createElement("span");
+    nameWrap.className = "peer-name-wrap";
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
     const peerMicEnabled = voiceMicByNickname[peerNickname] !== false;
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
-    nameSpan.textContent = peerMicEnabled ? peerNickname : `${peerNickname} (микро выкл)`;
-    row.appendChild(nameSpan);
-    const audioBtn = document.createElement("button");
-    audioBtn.type = "button";
-    audioBtn.className = "peer-audio-btn";
-    audioBtn.textContent = isMuted ? "🔇" : "🔊";
-    audioBtn.classList.toggle("is-muted", isMuted);
-    audioBtn.setAttribute("aria-label", isMuted ? `Включить звук ${peerNickname}` : `Настройки звука ${peerNickname}`);
-    audioBtn.setAttribute("title", isMuted ? "Пользователь заглушён" : "Настройки звука");
-    audioBtn.addEventListener("click", async (ev) => {
-      ev.stopPropagation();
-      await openAudioPopup(audioBtn, peerNickname);
-    });
-    row.appendChild(audioBtn);
+    nameSpan.textContent = peerNickname;
+    nameWrap.appendChild(nameSpan);
+    if (!peerMicEnabled) {
+      const micBadge = document.createElement("span");
+      micBadge.className = "peer-mic-badge is-off";
+      micBadge.textContent = "🎙️";
+      micBadge.setAttribute("title", "Микрофон выключен");
+      micBadge.setAttribute("aria-label", "Микрофон выключен");
+      nameWrap.appendChild(micBadge);
+    }
+    row.appendChild(nameWrap);
+    const isSelf = myNickname && peerNickname === myNickname;
+    if (!isSelf) {
+      const audioBtn = document.createElement("button");
+      audioBtn.type = "button";
+      audioBtn.className = "peer-audio-btn";
+      audioBtn.textContent = isMuted ? "🔇" : "🔊";
+      audioBtn.classList.toggle("is-muted", isMuted);
+      audioBtn.setAttribute("aria-label", isMuted ? `Включить звук ${peerNickname}` : `Настройки звука ${peerNickname}`);
+      audioBtn.setAttribute("title", isMuted ? "Пользователь заглушён" : "Настройки звука");
+      audioBtn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        await openAudioPopup(audioBtn, peerNickname);
+      });
+      row.appendChild(audioBtn);
+    }
     li.appendChild(row);
-    li.title = "Нажмите: громкость / mute";
-    li.style.cursor = "pointer";
-    li.addEventListener("click", async () => {
-      await openAudioPopup(li, peerNickname);
-    });
+    if (!isSelf) {
+      li.title = "Нажмите: громкость / mute";
+      li.style.cursor = "pointer";
+      li.addEventListener("click", async () => {
+        await openAudioPopup(li, peerNickname);
+      });
+    } else {
+      li.title = "";
+      li.style.cursor = "default";
+    }
 
     participantsEl.appendChild(li);
   }
 
   syncAdminParticipantListIfVisible();
+}
+
+function renderOnlineParticipants() {
+  if (!onlineParticipantsEl) {
+    return;
+  }
+  onlineParticipantsEl.innerHTML = "";
+  for (const nickname of onlineUsersList()) {
+    const li = document.createElement("li");
+    const nameWrap = document.createElement("span");
+    nameWrap.className = "peer-name-wrap";
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "peer-name";
+    nameSpan.textContent = nickname;
+    nameWrap.appendChild(nameSpan);
+    if (voiceMicByNickname[nickname] === false) {
+      const micBadge = document.createElement("span");
+      micBadge.className = "peer-mic-badge is-off";
+      micBadge.textContent = "🎙️";
+      micBadge.setAttribute("title", "Микрофон выключен");
+      micBadge.setAttribute("aria-label", "Микрофон выключен");
+      nameWrap.appendChild(micBadge);
+    }
+    li.appendChild(nameWrap);
+    onlineParticipantsEl.appendChild(li);
+  }
 }
 
 function updateAdminJoinHint() {
@@ -2070,6 +2114,7 @@ function connectSocket() {
         if (message && typeof message.nickname === "string") {
           delete voiceMicByNickname[message.nickname];
         }
+        renderOnlineParticipants();
         setStatus(`${message.nickname} вышел`);
         notifyAdminRosterRefresh();
         break;
@@ -2109,6 +2154,7 @@ function connectSocket() {
         if (message && typeof message.nickname === "string") {
           voiceMicByNickname[message.nickname] = message.enabled !== false;
           renderParticipants();
+          renderOnlineParticipants();
         }
         break;
       case "rename-ok": {
@@ -2128,6 +2174,7 @@ function connectSocket() {
           setStatus(`Имя изменено: ${oldNickname} -> ${nextNickname}`);
           renderChannelPanels();
           renderParticipants();
+          renderOnlineParticipants();
         }
         if (pendingRename) {
           clearTimeout(pendingRename.timer);

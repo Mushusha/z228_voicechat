@@ -308,6 +308,11 @@
         padding: 0;
         margin: 0;
       }
+      ul#onlineParticipants {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
 
       #participants li {
         display: flex;
@@ -316,8 +321,18 @@
         padding: 10px 0;
         border-bottom: 1px solid var(--border);
       }
+      #onlineParticipants li {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
 
       #participants li:last-child {
+        border-bottom: 0;
+      }
+      #onlineParticipants li:last-child {
         border-bottom: 0;
       }
 
@@ -334,6 +349,40 @@
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      .peer-name-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .peer-mic-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        font-size: 0.72rem;
+        line-height: 1;
+        color: var(--text-muted);
+        position: relative;
+        flex-shrink: 0;
+      }
+      .peer-mic-badge.is-off {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      .peer-mic-badge.is-off::after {
+        content: "";
+        position: absolute;
+        width: 14px;
+        height: 2px;
+        border-radius: 2px;
+        background: currentColor;
+        transform: rotate(-45deg);
       }
 
       .peer-name.muted-label {
@@ -1134,6 +1183,10 @@
                   <h2 class="section-title">В группе</h2>
                   <ul id="participants"></ul>
                 </div>
+                <div>
+                  <h2 class="section-title">Онлайн</h2>
+                  <ul id="onlineParticipants"></ul>
+                </div>
               </div>
             </div>
           </div>
@@ -1146,7 +1199,7 @@
               alt="QR-код доната"
               loading="lazy"
             />
-            <p class="donate-caption">донат</p>
+            <p class="donate-caption">если хотите поддержать нас</p>
           </div>
         </div>
       </aside>
@@ -1274,6 +1327,6 @@
         </div>
       </div>
     </div>
-    <script src="./app.js?v=39"></script>
+    <script src="./app.js?v=41"></script>
   </body>
 </html>
