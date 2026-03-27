@@ -615,8 +615,7 @@ function renderChannelPanels() {
       btn.textContent = ch.name;
       btn.addEventListener("click", () => {
         if (joinedRoom && ch.id === currentVoiceChannel) {
-          currentVoiceChannel = ch.id;
-          void leaveRoom();
+          // Повторный клик по уже выбранному голосовому каналу ничего не делает.
           return;
         }
         currentVoiceChannel = ch.id;
