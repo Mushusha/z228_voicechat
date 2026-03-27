@@ -63,6 +63,7 @@ type hubState struct {
 
 	clientsByConn   map[*websocket.Conn]*client
 	connsByNickname map[string]*websocket.Conn
+	presenceByConn  map[*websocket.Conn]string
 	writersByConn   map[*websocket.Conn]*connWriter
 	adminByConn     map[*websocket.Conn]bool
 
@@ -75,6 +76,7 @@ func (h *Hub) getState() *hubState {
 		h.state = &hubState{
 			clientsByConn:   make(map[*websocket.Conn]*client),
 			connsByNickname: make(map[string]*websocket.Conn),
+			presenceByConn:  make(map[*websocket.Conn]string),
 			writersByConn:   make(map[*websocket.Conn]*connWriter),
 			adminByConn:     make(map[*websocket.Conn]bool),
 			textChannels: map[string]ChatChannel{
@@ -134,6 +136,8 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 		switch msgType {
 		case "get-channels":
 			h.onGetChannels(c)
+		case "presence":
+			h.onPresence(c, msg)
 		case "join":
 			h.onJoin(c, msg)
 		default:
@@ -190,7 +194,7 @@ func clientShouldNotSend(t string) bool {
 		"peer-joined", "peer-left", "signal-error", "error", "kicked",
 		"admin-verify-ok", "admin-peers-result", "chat-message-updated",
 		"chat-message-deleted", "chat-message-reactions", "channels-state",
-		"rename-ok", "rename-rejected", "mic-state":
+		"rename-ok", "rename-rejected", "mic-state", "online-state":
 		return true
 	default:
 		return false
@@ -204,6 +208,7 @@ func (h *Hub) onGetChannels(c *websocket.Conn) {
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voiceMembers := voiceMembersByChannelLocked(st)
 	voiceMic := voiceMicByNicknameLocked(st)
+	onlineUsers := onlineUsersLocked(st)
 	st.mu.Unlock()
 	h.sendMap(c, map[string]any{
 		"type":          "channels-state",
@@ -211,7 +216,21 @@ func (h *Hub) onGetChannels(c *websocket.Conn) {
 		"voiceChannels": voiceChannels,
 		"voiceMembers":  voiceMembers,
 		"voiceMic":      voiceMic,
+		"onlineUsers":   onlineUsers,
 	})
+}
+
+func (h *Hub) onPresence(c *websocket.Conn, msg map[string]any) {
+	nickname := strings.TrimSpace(asString(msg["nickname"]))
+	st := h.getState()
+	st.mu.Lock()
+	if nickname == "" {
+		delete(st.presenceByConn, c)
+	} else {
+		st.presenceByConn[c] = nickname
+	}
+	st.mu.Unlock()
+	h.broadcastOnlineState()
 }
 
 func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
@@ -656,22 +675,29 @@ func (h *Hub) leave(c *websocket.Conn) {
 	cl := st.clientsByConn[c]
 	if cl == nil {
 		w := st.writersByConn[c]
+		_, hadPresence := st.presenceByConn[c]
+		delete(st.presenceByConn, c)
 		delete(st.writersByConn, c)
 		st.mu.Unlock()
 		if w != nil {
 			w.close()
+		}
+		if hadPresence {
+			h.broadcastOnlineState()
 		}
 		return
 	}
 	delete(st.clientsByConn, c)
 	delete(st.connsByNickname, cl.nickname)
 	delete(st.adminByConn, c)
+	delete(st.presenceByConn, c)
 	w := st.writersByConn[c]
 	delete(st.writersByConn, c)
 	st.mu.Unlock()
 
 	h.broadcastToVoiceChannel(map[string]any{"type": "peer-left", "nickname": cl.nickname}, cl.voiceChannel, nil)
 	h.broadcastChannelsState()
+	h.broadcastOnlineState()
 	if w != nil {
 		w.close()
 	}
@@ -820,6 +846,32 @@ func voiceMicByNicknameLocked(st *hubState) map[string]bool {
 	return out
 }
 
+func onlineUsersLocked(st *hubState) []string {
+	seen := make(map[string]struct{}, len(st.clientsByConn)+len(st.presenceByConn))
+	for _, cl := range st.clientsByConn {
+		if cl == nil || cl.nickname == "" {
+			continue
+		}
+		seen[cl.nickname] = struct{}{}
+	}
+	for _, nickname := range st.presenceByConn {
+		nickname = strings.TrimSpace(nickname)
+		if nickname == "" {
+			continue
+		}
+		seen[nickname] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for nickname := range seen {
+		out = append(out, nickname)
+	}
+	coll := collate.New(language.Russian)
+	sort.Slice(out, func(i, j int) bool {
+		return coll.CompareString(out[i], out[j]) < 0
+	})
+	return out
+}
+
 func (h *Hub) broadcastChannelsState() {
 	st := h.getState()
 	st.mu.Lock()
@@ -827,6 +879,7 @@ func (h *Hub) broadcastChannelsState() {
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voiceMembers := voiceMembersByChannelLocked(st)
 	voiceMic := voiceMicByNicknameLocked(st)
+	onlineUsers := onlineUsersLocked(st)
 	st.mu.Unlock()
 	h.broadcastMap(
 		map[string]any{
@@ -835,6 +888,21 @@ func (h *Hub) broadcastChannelsState() {
 			"voiceChannels": voiceChannels,
 			"voiceMembers":  voiceMembers,
 			"voiceMic":      voiceMic,
+			"onlineUsers":   onlineUsers,
+		},
+		nil,
+	)
+}
+
+func (h *Hub) broadcastOnlineState() {
+	st := h.getState()
+	st.mu.Lock()
+	onlineUsers := onlineUsersLocked(st)
+	st.mu.Unlock()
+	h.broadcastMap(
+		map[string]any{
+			"type":        "online-state",
+			"onlineUsers": onlineUsers,
 		},
 		nil,
 	)

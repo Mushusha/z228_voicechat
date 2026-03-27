@@ -55,11 +55,14 @@ async function leaveRoom() {
   renderChannelPanels();
   renderParticipants();
   renderOnlineParticipants();
+  ensurePresenceSocket();
+  publishPresence();
 }
 
 /** Закрытие вкладки / уход со страницы: сразу закрыть сигнальный сокет, чтобы сервер разослал peer-left. */
 function closeSignalingOnPageExit() {
   const s = socket;
+  closePresenceSocket();
   if (!s) {
     return;
   }
@@ -266,7 +269,10 @@ let allSoundEnabled = true;
 let allSoundPercent = 100;
 let voiceMembersByChannel = {};
 let voiceMicByNickname = {};
+let onlineUsers = [];
 let pendingRename = null;
+let presenceSocket = null;
+let presenceRetryTimer = null;
 
 function syncAuthUi() {
   const hasSavedNick =
@@ -295,17 +301,109 @@ function syncAuthUi() {
 
 function onlineUsersList() {
   const users = new Set();
-  for (const members of Object.values(voiceMembersByChannel)) {
-    if (!Array.isArray(members)) {
-      continue;
-    }
-    for (const name of members) {
-      if (name) {
-        users.add(name);
-      }
+  for (const name of Array.isArray(onlineUsers) ? onlineUsers : []) {
+    if (typeof name === "string" && name.trim()) {
+      users.add(name.trim());
     }
   }
   return Array.from(users).sort((a, b) => a.localeCompare(b, "ru"));
+}
+
+function presenceNickname() {
+  const fromInput = nicknameInput ? nicknameInput.value.trim() : "";
+  if (fromInput) {
+    return fromInput;
+  }
+  const fromMem = String(myNickname || "").trim();
+  if (fromMem) {
+    return fromMem;
+  }
+  const fromSession = String(sessionStorage.getItem(SS_NICK) || "").trim();
+  if (fromSession) {
+    return fromSession;
+  }
+  return String(getCookie(NICK_COOKIE) || "").trim();
+}
+
+function closePresenceSocket() {
+  if (presenceRetryTimer) {
+    clearTimeout(presenceRetryTimer);
+    presenceRetryTimer = null;
+  }
+  if (!presenceSocket) {
+    return;
+  }
+  const s = presenceSocket;
+  presenceSocket = null;
+  s.onopen = null;
+  s.onmessage = null;
+  s.onerror = null;
+  s.onclose = null;
+  try {
+    s.close();
+  } catch (_) {}
+}
+
+function publishPresence() {
+  const s = presenceSocket;
+  if (!s || s.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  const nick = presenceNickname();
+  if (!nick) {
+    return;
+  }
+  try {
+    s.send(JSON.stringify({ type: "presence", nickname: nick }));
+  } catch (_) {}
+}
+
+function ensurePresenceSocket() {
+  if (joinedRoom) {
+    return;
+  }
+  if (presenceSocket && (presenceSocket.readyState === WebSocket.OPEN || presenceSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const wsUrl = `${protocol}://${location.host}`;
+  const s = new WebSocket(wsUrl);
+  presenceSocket = s;
+  s.onopen = () => {
+    publishPresence();
+    try {
+      s.send(JSON.stringify({ type: "get-channels" }));
+    } catch (_) {}
+  };
+  s.onmessage = (event) => {
+    let message = null;
+    try {
+      message = JSON.parse(event.data);
+    } catch (_) {}
+    if (!message) {
+      return;
+    }
+    if (message.type === "channels-state") {
+      applyChannelsState(message);
+      return;
+    }
+    if (message.type === "online-state" && Array.isArray(message.onlineUsers)) {
+      onlineUsers = message.onlineUsers;
+      renderOnlineParticipants();
+    }
+  };
+  s.onerror = () => {};
+  s.onclose = () => {
+    if (presenceSocket === s) {
+      presenceSocket = null;
+    }
+    if (!joinedRoom && !presenceRetryTimer) {
+      presenceRetryTimer = setTimeout(() => {
+        presenceRetryTimer = null;
+        ensurePresenceSocket();
+      }, 900);
+    }
+  };
 }
 
 function enqueueRtc(fn) {
@@ -457,6 +555,9 @@ function applyChannelsState(message) {
   }
   if (message.voiceMic && typeof message.voiceMic === "object") {
     voiceMicByNickname = message.voiceMic;
+  }
+  if (Array.isArray(message.onlineUsers)) {
+    onlineUsers = message.onlineUsers;
   }
   try {
     localStorage.setItem(
@@ -1930,6 +2031,7 @@ function connectSocket() {
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
+    closePresenceSocket();
     try {
       socket.send(JSON.stringify({ type: "get-channels" }));
     } catch (_) {}
@@ -2150,6 +2252,12 @@ function connectSocket() {
       case "signal-error":
         console.warn("Signal error:", message);
         break;
+      case "online-state":
+        if (Array.isArray(message.onlineUsers)) {
+          onlineUsers = message.onlineUsers;
+          renderOnlineParticipants();
+        }
+        break;
       case "mic-state":
         if (message && typeof message.nickname === "string") {
           voiceMicByNickname[message.nickname] = message.enabled !== false;
@@ -2252,6 +2360,8 @@ function connectSocket() {
       for (const peerNickname of Array.from(peers.keys())) {
         removePeer(peerNickname);
       }
+      ensurePresenceSocket();
+      publishPresence();
     } catch (_) {
       /* страница может уже выгружаться */
     }
@@ -2572,6 +2682,7 @@ async function join(options = {}) {
   }
 
   forceDisconnectClient();
+  closePresenceSocket();
   myNickname = nickname;
   joinBtn.disabled = false;
   nicknameInput.disabled = false;
@@ -2604,6 +2715,12 @@ async function join(options = {}) {
 joinBtn.addEventListener("click", () => {
   void join({ fromAutoRejoin: false });
 });
+
+if (nicknameInput) {
+  nicknameInput.addEventListener("input", () => {
+    publishPresence();
+  });
+}
 
 if (leaveBtn) {
   leaveBtn.addEventListener("click", () => {
@@ -2886,6 +3003,8 @@ if (chatImageBtn && chatImageInput) {
   }
   renderChannelPanels();
   syncAuthUi();
+  ensurePresenceSocket();
+  publishPresence();
   requestChannelsSnapshot();
   if (c && !joinedRoom) {
     setTimeout(() => {
