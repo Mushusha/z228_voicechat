@@ -265,6 +265,7 @@ let voiceChannels = [{ id: "voice-general", name: "Общий голос" }];
 let currentTextChannel = "text-general";
 let currentVoiceChannel = "voice-general";
 let textDetached = false;
+let voiceDetached = false;
 let allSoundEnabled = true;
 let allSoundPercent = 100;
 let voiceMembersByChannel = {};
@@ -544,11 +545,13 @@ function applyChannelsState(message) {
   if (Array.isArray(message.voiceChannels)) {
     voiceChannels = message.voiceChannels;
   }
-  if (typeof message.currentText === "string" && message.currentText) {
+  if (typeof message.currentText === "string") {
     currentTextChannel = message.currentText;
+    textDetached = currentTextChannel === "";
   }
-  if (typeof message.currentVoice === "string" && message.currentVoice) {
+  if (typeof message.currentVoice === "string") {
     currentVoiceChannel = message.currentVoice;
+    voiceDetached = currentVoiceChannel === "";
   }
   if (message.voiceMembers && typeof message.voiceMembers === "object") {
     voiceMembersByChannel = message.voiceMembers;
@@ -570,6 +573,7 @@ function applyChannelsState(message) {
   } catch (_) {}
   renderChannelSelect(textChannelSelect, textChannels, currentTextChannel);
   renderChannelSelect(voiceChannelSelect, voiceChannels, currentVoiceChannel);
+  setMicControlsEnabled(!voiceDetached && !!localStream);
   renderChannelPanels();
   renderParticipants();
   renderOnlineParticipants();
@@ -587,8 +591,24 @@ function renderChannelPanels() {
       btn.className = "channel-btn" + (isCurrent && joinedRoom ? " active" : "");
       btn.textContent = ch.name;
       btn.addEventListener("click", () => {
+        if (joinedRoom && ch.id === currentTextChannel && !textDetached) {
+          textDetached = true;
+          currentTextChannel = "";
+          setChatEnabled(false);
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "set-text-channel", channelId: "" }));
+          }
+          if (chatLog) {
+            chatLog.innerHTML = "";
+          }
+          renderChannelPanels();
+          return;
+        }
         textDetached = false;
         currentTextChannel = ch.id;
+        if (!joinedRoom) {
+          voiceDetached = true;
+        }
         if (!joinedRoom) {
           void join({ fromAutoRejoin: true });
           return;
@@ -610,18 +630,55 @@ function renderChannelPanels() {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      const isCurrent = ch.id === currentVoiceChannel;
+      const isCurrent = !voiceDetached && ch.id === currentVoiceChannel;
       btn.className = "channel-btn" + (isCurrent && joinedRoom ? " active" : "");
       btn.textContent = ch.name;
       btn.addEventListener("click", () => {
         if (joinedRoom && ch.id === currentVoiceChannel) {
-          // Повторный клик по уже выбранному голосовому каналу ничего не делает.
+          if (!voiceDetached) {
+            voiceDetached = true;
+            currentVoiceChannel = "";
+            if (localStream) {
+              localStream.getTracks().forEach((t) => t.stop());
+              localStream = null;
+            }
+            setMicEnabled(false);
+            setMicControlsEnabled(false);
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "set-voice-channel", channelId: "" }));
+            }
+            for (const peerNickname of Array.from(peers.keys())) {
+              removePeer(peerNickname);
+            }
+            renderChannelPanels();
+          }
           return;
         }
+        voiceDetached = false;
         currentVoiceChannel = ch.id;
+        if (!joinedRoom) {
+          textDetached = true;
+        }
         if (!joinedRoom) {
           void join({ fromAutoRejoin: true });
           return;
+        }
+        if (!localStream && window.isSecureContext) {
+          navigator.mediaDevices
+            .getUserMedia(getAudioConstraints())
+            .then((stream) => {
+              localStream = stream;
+              setMicEnabled(localStorage.getItem(LS_MIC_ENABLED) !== "0");
+              setMicControlsEnabled(true);
+            })
+            .catch((error) => {
+              console.warn("voice mic", error);
+              localStream = null;
+              setMicEnabled(false);
+              setMicControlsEnabled(false);
+            });
+        } else {
+          setMicControlsEnabled(!!localStream);
         }
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "set-voice-channel", channelId: ch.id }));
@@ -1340,6 +1397,15 @@ function setMicButtonState() {
   updateDockIcons();
 }
 
+function setMicControlsEnabled(enabled) {
+  if (micBtn) {
+    micBtn.disabled = !enabled;
+  }
+  if (micToggleBottom) {
+    micToggleBottom.disabled = !enabled;
+  }
+}
+
 function setMicEnabled(enabled) {
   micEnabled = enabled;
   try {
@@ -1560,7 +1626,7 @@ function hookRemoteStream(peerNickname, stream) {
 function renderParticipants() {
   participantsEl.innerHTML = "";
   const peerSet = new Set(Array.from(peers.keys()));
-  if (joinedRoom) {
+  if (joinedRoom && !voiceDetached) {
     const serverList = Array.isArray(voiceMembersByChannel[currentVoiceChannel])
       ? voiceMembersByChannel[currentVoiceChannel]
       : [];
@@ -2032,8 +2098,8 @@ function connectSocket() {
       JSON.stringify({
         type: "join",
         nickname: myNickname,
-        textChannel: currentTextChannel,
-        voiceChannel: currentVoiceChannel,
+        textChannel: textDetached ? "" : currentTextChannel,
+        voiceChannel: voiceDetached ? "" : currentVoiceChannel,
       })
     );
   };
@@ -2084,12 +2150,8 @@ function connectSocket() {
             }
             setStatus(line);
           }
-          if (micBtn) {
-            micBtn.disabled = false;
-          }
-          if (micToggleBottom) {
-            micToggleBottom.disabled = false;
-          }
+          const micControlsEnabled = !voiceDetached && !!localStream;
+          setMicControlsEnabled(micControlsEnabled);
           setChatEnabled(!textDetached);
           syncAuthUi();
           ensureAudibleDefaultsAfterJoin();
@@ -2665,19 +2727,23 @@ async function join(options = {}) {
   nicknameInput.disabled = false;
 
   try {
-    if (window.isSecureContext) {
+    const wantsVoice = !voiceDetached;
+    if (window.isSecureContext && wantsVoice) {
       await resumeAudioContextIfNeeded();
       localStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
       setMicEnabled(localStorage.getItem(LS_MIC_ENABLED) !== "0");
+      setMicControlsEnabled(true);
     } else {
       localStream = null;
       setMicEnabled(false);
+      setMicControlsEnabled(false);
     }
     connectSocket();
   } catch (error) {
     console.error(error);
     localStream = null;
     setMicEnabled(false);
+    setMicControlsEnabled(false);
     if (error && error.name === "NotAllowedError") {
       setStatus("Микрофон запрещён. Подключаю только текстовый чат.");
     } else if (error && error.name === "NotFoundError") {

@@ -12,6 +12,10 @@ import (
 )
 
 func (h *Hub) onChat(c *websocket.Conn, sender *client, msg map[string]any) {
+	if sender.textChannel == "" {
+		h.sendMap(c, map[string]any{"type": "error", "message": "Сначала войдите в текстовый канал."})
+		return
+	}
 	text := strings.TrimSpace(asString(msg["text"]))
 	if len([]rune(text)) > 500 {
 		text = string([]rune(text)[:500])
