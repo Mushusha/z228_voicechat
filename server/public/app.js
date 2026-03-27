@@ -306,6 +306,14 @@ async function loadRtcConfig() {
   }
 }
 
+/** Один инициатор на пару ников — иначе два offer (ICE glare) и голос не поднимается. */
+function shouldInitiateWithPeer(peerNickname) {
+  if (!myNickname || !peerNickname) {
+    return true;
+  }
+  return myNickname.localeCompare(peerNickname, "ru") < 0;
+}
+
 function getAudioConstraints() {
   return {
     audio: {
@@ -1665,6 +1673,10 @@ async function createPeerConnection(peerNickname, initiator) {
     for (const track of localStream.getTracks()) {
       pc.addTrack(track, localStream);
     }
+  } else {
+    try {
+      pc.addTransceiver("audio", { direction: "recvonly" });
+    } catch (_) {}
   }
 
   pc.onicecandidate = (event) => {
@@ -1868,7 +1880,7 @@ function connectSocket() {
           // он должен быть виден даже до установки p2p-соединений.
           renderParticipants();
           for (const peerNickname of message.peers) {
-            await createPeerConnection(peerNickname, false);
+            await createPeerConnection(peerNickname, shouldInitiateWithPeer(peerNickname));
           }
         });
         await rtcChain;
@@ -1935,7 +1947,7 @@ function connectSocket() {
           enqueueRtc(async () => {
             for (const peerNickname of message.voicePeers) {
               if (!peers.has(peerNickname)) {
-                await createPeerConnection(peerNickname, true);
+                await createPeerConnection(peerNickname, shouldInitiateWithPeer(peerNickname));
               }
             }
           });
@@ -1952,7 +1964,7 @@ function connectSocket() {
         break;
       case "peer-joined":
         enqueueRtc(async () => {
-          await createPeerConnection(message.nickname, true);
+          await createPeerConnection(message.nickname, shouldInitiateWithPeer(message.nickname));
           setStatus(`${message.nickname} вошёл`);
         });
         await rtcChain;
