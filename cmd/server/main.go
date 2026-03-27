@@ -24,6 +24,7 @@ func main() {
 	hub := ws.NewHub(ws.HubOptions{
 		AdminPanelPassword: cfg.AdminPanelPassword,
 		MongoURI:           cfg.MongoURI,
+		EnableServerLogs:   cfg.ServerLogStream,
 	})
 	hub.InitMongoAsync()
 
@@ -46,6 +47,9 @@ func main() {
 	}
 	if cfg.TURNURLs != "" {
 		log.Printf("WebRTC: dedicated TURN from TURN_URLS")
+	}
+	if cfg.ServerLogStream {
+		log.Printf("WebSocket: SERVER_LOG_STREAM enabled")
 	}
 
 	mux := http.NewServeMux()

@@ -100,22 +100,26 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 	}
 	st.mu.Unlock()
 
-	h.send(c, HelloPayload{Type: "hello", AdminPanel: true, ChatMessageOps: true})
+	h.send(c, HelloPayload{Type: "hello", AdminPanel: true, ChatMessageOps: true, ServerLogs: h.serverLogsEnabled()})
+	h.sendServerLogHistory(c)
 	h.onGetChannels(c)
 
 	for {
 		_, raw, err := c.ReadMessage()
 		if err != nil {
+			h.emitServerLog("info", "ws.disconnect", "WebSocket disconnected.", "", nil)
 			h.leave(c)
 			return
 		}
 
 		var msg map[string]any
 		if err := json.Unmarshal(raw, &msg); err != nil {
+			h.emitServerLog("warn", "ws.bad_json", "Invalid JSON payload from client.", "", map[string]string{"error": err.Error()})
 			h.sendMap(c, map[string]any{"type": "error", "message": "Invalid JSON payload."})
 			continue
 		}
 		if msg == nil {
+			h.emitServerLog("warn", "ws.bad_shape", "Invalid WebSocket message shape.", "", nil)
 			h.sendMap(c, map[string]any{"type": "error", "message": "Invalid message shape."})
 			continue
 		}
@@ -123,6 +127,7 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 		msgType := normalizeWsMessageType(msg["type"])
 		if msgType == "" {
 			log.Printf("WebSocket message without type: %v", msg)
+			h.emitServerLog("warn", "ws.missing_type", "WebSocket message without type.", "", nil)
 			continue
 		}
 
@@ -171,6 +176,7 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 			default:
 				// chat ops added in mongo-store step
 				log.Printf("Unknown WebSocket message type: %s %v", msgType, msg)
+				h.emitServerLog("warn", "ws.unknown_type", "Unknown WebSocket message type.", "", map[string]string{"type": msgType})
 				h.sendMap(c, map[string]any{"type": "error", "message": "Unknown message type: " + msgType})
 			}
 		}
@@ -207,6 +213,7 @@ func (h *Hub) onGetChannels(c *websocket.Conn) {
 func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	nickname := strings.TrimSpace(asString(msg["nickname"]))
 	if nickname == "" {
+		h.emitServerLog("warn", "join.rejected", "Join rejected: nickname is required.", "", nil)
 		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Nickname is required."})
 		return
 	}
@@ -215,11 +222,13 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	st.mu.Lock()
 	if _, ok := st.clientsByConn[c]; ok {
 		st.mu.Unlock()
+		h.emitServerLog("warn", "join.rejected", "Join rejected: connection already joined.", nickname, nil)
 		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Already joined."})
 		return
 	}
 	if _, ok := st.connsByNickname[nickname]; ok {
 		st.mu.Unlock()
+		h.emitServerLog("warn", "join.rejected", "Join rejected: nickname already taken.", nickname, nil)
 		h.sendMap(c, map[string]any{"type": "join-rejected", "reason": "Nickname already taken."})
 		return
 	}
@@ -248,6 +257,10 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	voiceMembers := voiceMembersByChannelLocked(st)
 	st.mu.Unlock()
 
+	h.emitServerLog("info", "join.accepted", "Participant joined the room.", nickname, map[string]string{
+		"textChannel":  textChannel,
+		"voiceChannel": voiceChannel,
+	})
 	h.sendMap(c, map[string]any{"type": "join-accepted", "nickname": nickname, "peers": peers})
 	h.sendMap(c, map[string]any{
 		"type":         "channels-state",
@@ -265,6 +278,7 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		msgs, err := h.getStore().History(context.Background(), 100)
 		if err != nil {
 			log.Printf("chat-history: %v", err)
+			h.emitServerLog("error", "chat.history_failed", "Failed to load chat history.", nickname, map[string]string{"error": err.Error()})
 			h.sendMap(c, map[string]any{"type": "error", "message": "Failed to load chat history."})
 			return
 		}
@@ -283,6 +297,7 @@ func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
 	st.mu.Unlock()
 
 	if targetConn == nil || targetClient == nil {
+		h.emitServerLog("warn", "signal.target_missing", "Signal target not found.", sender.nickname, map[string]string{"target": target})
 		h.sendMap(c, map[string]any{
 			"type":   "signal-error",
 			"target": target,
@@ -291,6 +306,7 @@ func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
 		return
 	}
 	if targetClient.voiceChannel != sender.voiceChannel {
+		h.emitServerLog("warn", "signal.wrong_channel", "Signal target is in another voice channel.", sender.nickname, map[string]string{"target": target})
 		h.sendMap(c, map[string]any{
 			"type":   "signal-error",
 			"target": target,
@@ -304,10 +320,12 @@ func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
 		"from":    sender.nickname,
 		"payload": payload,
 	})
+	h.emitServerLog("info", "signal.forwarded", "Signal forwarded to peer.", sender.nickname, map[string]string{"target": target})
 }
 
 func (h *Hub) onAdminVerify(c *websocket.Conn, msg map[string]any) {
 	if !h.adminPanelSecretOk(msg) {
+		h.emitServerLog("warn", "admin.verify_failed", "Admin verification failed.", "", nil)
 		h.sendMap(c, map[string]any{"type": "error", "message": "Неверный пароль."})
 		return
 	}
@@ -315,6 +333,7 @@ func (h *Hub) onAdminVerify(c *websocket.Conn, msg map[string]any) {
 	st.mu.Lock()
 	st.adminByConn[c] = true
 	st.mu.Unlock()
+	h.emitServerLog("info", "admin.verify_ok", "Admin verification succeeded.", "", nil)
 	h.sendMap(c, map[string]any{"type": "admin-verify-ok"})
 }
 
@@ -356,9 +375,11 @@ func (h *Hub) onAdminKick(c *websocket.Conn, sender *client, msg map[string]any)
 	st.mu.Unlock()
 
 	if targetConn == nil {
+		h.emitServerLog("warn", "admin.kick_missing", "Admin kick target not found.", sender.nickname, map[string]string{"target": targetNick})
 		h.sendMap(c, map[string]any{"type": "error", "message": "Участник не в комнате."})
 		return
 	}
+	h.emitServerLog("warn", "admin.kick", "Participant was kicked by admin.", sender.nickname, map[string]string{"target": targetNick})
 
 	h.sendMap(targetConn, map[string]any{
 		"type":   "kicked",
@@ -376,6 +397,7 @@ func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string
 	st.mu.Lock()
 	if _, ok := st.textChannels[channelID]; !ok {
 		st.mu.Unlock()
+		h.emitServerLog("warn", "channel.text_missing", "Text channel not found.", sender.nickname, map[string]string{"channelId": channelID})
 		h.sendMap(c, map[string]any{"type": "error", "message": "Текстовый канал не найден."})
 		return
 	}
@@ -385,6 +407,7 @@ func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string
 	voicePeers := peersForVoiceChannelLocked(st, sender.voiceChannel, sender.nickname)
 	voiceMembers := voiceMembersByChannelLocked(st)
 	st.mu.Unlock()
+	h.emitServerLog("info", "channel.text_set", "Participant switched text channel.", sender.nickname, map[string]string{"channelId": channelID})
 	h.sendMap(c, map[string]any{
 		"type":          "channels-state",
 		"textChannels":  textChannels,
@@ -403,6 +426,7 @@ func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[strin
 	st.mu.Lock()
 	if _, ok := st.voiceChannels[channelID]; !ok {
 		st.mu.Unlock()
+		h.emitServerLog("warn", "channel.voice_missing", "Voice channel not found.", sender.nickname, map[string]string{"channelId": channelID})
 		h.sendMap(c, map[string]any{"type": "error", "message": "Голосовой канал не найден."})
 		return
 	}
@@ -414,6 +438,7 @@ func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[strin
 	oldVoicePeers := peersForVoiceChannelLocked(st, oldVoice, sender.nickname)
 	voiceMembers := voiceMembersByChannelLocked(st)
 	st.mu.Unlock()
+	h.emitServerLog("info", "channel.voice_set", "Participant switched voice channel.", sender.nickname, map[string]string{"from": oldVoice, "to": channelID})
 
 	h.sendMap(c, map[string]any{
 		"type":          "channels-state",
@@ -603,6 +628,7 @@ func (h *Hub) leave(c *websocket.Conn) {
 	delete(st.writersByConn, c)
 	st.mu.Unlock()
 
+	h.emitServerLog("info", "leave", "Participant left the room.", cl.nickname, map[string]string{"voiceChannel": cl.voiceChannel})
 	h.broadcastToVoiceChannel(map[string]any{"type": "peer-left", "nickname": cl.nickname}, cl.voiceChannel, nil)
 	h.broadcastChannelsState()
 	if w != nil {

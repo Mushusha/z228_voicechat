@@ -27,6 +27,7 @@
 - `LISTEN_HOST` (по умолчанию `::`, dual-stack IPv4/IPv6)
 - `MONGODB_URI` (по умолчанию `mongodb://127.0.0.1:27017/zalupa228local`)
 - `ADMIN_PANEL_PASSWORD` (по умолчанию `admin123`)
+- `SERVER_LOG_STREAM` (по умолчанию `0`, включает поток серверных логов в отдельном окне UI)
 - `CERT_EXTRA_IPS` (доп. IP для SAN self-signed сертификата, через запятую)
 
 ## Почему локально есть звук, а на VPS может не быть

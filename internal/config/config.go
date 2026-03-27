@@ -12,6 +12,7 @@ type Config struct {
 	ListenHost         string
 	MongoURI           string
 	AdminPanelPassword string
+	ServerLogStream    bool
 	CertExtraIPs       string
 	RTCIceServersJSON  string
 	TURNURLs           string
@@ -28,6 +29,7 @@ func Load() Config {
 		ListenHost:         envString("LISTEN_HOST", "::"),
 		MongoURI:           envString("MONGODB_URI", "mongodb://127.0.0.1:27017/zalupa228local"),
 		AdminPanelPassword: envString("ADMIN_PANEL_PASSWORD", "admin123"),
+		ServerLogStream:    envBool("SERVER_LOG_STREAM", false),
 		CertExtraIPs:       envString("CERT_EXTRA_IPS", ""),
 		RTCIceServersJSON:  envString("RTC_ICE_SERVERS", ""),
 		TURNURLs:           envString("TURN_URLS", ""),

@@ -130,6 +130,7 @@ const chatMenuBtn = document.getElementById("chatMenuBtn");
 const chatDropdown = document.getElementById("chatDropdown");
 const menuThemeBtn = document.getElementById("menuThemeBtn");
 const menuAdminBtn = document.getElementById("menuAdminBtn");
+const menuServerLogBtn = document.getElementById("menuServerLogBtn");
 const menuProfileBtn = document.getElementById("menuProfileBtn");
 const menuDonateBtn = document.getElementById("menuDonateBtn");
 const adminModal = document.getElementById("adminModal");
@@ -163,6 +164,9 @@ const voiceChannelSelect = document.getElementById("voiceChannelSelect");
 const channelsCloseBtn = document.getElementById("channelsCloseBtn");
 const donateModal = document.getElementById("donateModal");
 const donateCloseBtn = document.getElementById("donateCloseBtn");
+const serverLogModal = document.getElementById("serverLogModal");
+const serverLogList = document.getElementById("serverLogList");
+const serverLogCloseBtn = document.getElementById("serverLogCloseBtn");
 const micToggleBottom = document.getElementById("micToggleBottom");
 const allSoundToggleBtn = document.getElementById("allSoundToggleBtn");
 const allSoundVolume = document.getElementById("allSoundVolume");
@@ -237,6 +241,8 @@ let micEnabled = true;
 let joinedRoom = false;
 /** null до первого hello; false — сервер без chat-edit/chat-delete (старый процесс/образ). */
 let serverChatMessageOps = null;
+let serverLogsEnabled = false;
+let serverLogEntries = [];
 let rtcChain = Promise.resolve();
 /** Если не null, socket.onclose не затирает статус сообщением «Отключено» (исключение из комнаты). */
 let pendingKickedDisconnectStatus = null;
@@ -371,6 +377,92 @@ function persistPeerAudioSettings() {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function updateServerLogUiAvailability() {
+  if (menuServerLogBtn) {
+    menuServerLogBtn.hidden = !serverLogsEnabled;
+  }
+}
+
+function serverLogMetaLine(entry) {
+  const parts = [];
+  if (entry.nickname) {
+    parts.push(`nick=${entry.nickname}`);
+  }
+  if (entry.event) {
+    parts.push(`event=${entry.event}`);
+  }
+  if (entry.fields && typeof entry.fields === "object") {
+    for (const [k, v] of Object.entries(entry.fields)) {
+      parts.push(`${k}=${v}`);
+    }
+  }
+  return parts.join(" | ");
+}
+
+function renderServerLogs() {
+  if (!serverLogList) {
+    return;
+  }
+  serverLogList.innerHTML = "";
+  if (serverLogEntries.length === 0) {
+    const li = document.createElement("li");
+    li.className = "server-log-entry";
+    li.textContent = "Логи пока пустые.";
+    serverLogList.appendChild(li);
+    return;
+  }
+  for (const entry of serverLogEntries) {
+    const li = document.createElement("li");
+    li.className = "server-log-entry";
+    li.dataset.level = String(entry.level || "info");
+    const head = document.createElement("div");
+    head.className = "server-log-head";
+    const level = document.createElement("span");
+    level.textContent = String(entry.level || "info").toUpperCase();
+    const ts = document.createElement("span");
+    try {
+      ts.textContent = new Date(entry.createdAt).toLocaleString();
+    } catch (_) {
+      ts.textContent = String(entry.createdAt || "");
+    }
+    head.append(level, ts);
+    const msg = document.createElement("div");
+    msg.className = "server-log-message";
+    msg.textContent = String(entry.message || "");
+    li.append(head, msg);
+    const metaLine = serverLogMetaLine(entry);
+    if (metaLine) {
+      const meta = document.createElement("div");
+      meta.className = "server-log-meta";
+      meta.textContent = metaLine;
+      li.appendChild(meta);
+    }
+    serverLogList.appendChild(li);
+  }
+}
+
+function setServerLogHistory(entries) {
+  serverLogEntries = Array.isArray(entries) ? entries.slice(-200) : [];
+  renderServerLogs();
+}
+
+function appendServerLogEntry(entry) {
+  serverLogEntries.push(entry);
+  if (serverLogEntries.length > 200) {
+    serverLogEntries = serverLogEntries.slice(-200);
+  }
+  renderServerLogs();
+}
+
+function openServerLogModal() {
+  if (!serverLogsEnabled) {
+    setStatus("Поток логов сервера выключен на backend.");
+    return;
+  }
+  openSimpleModal(serverLogModal);
+  closeChatMenu();
 }
 
 function setPeerConnectionState(peerNickname, state) {
@@ -1937,10 +2029,20 @@ function connectSocket() {
     switch (message.type) {
       case "hello":
         serverChatMessageOps = message.chatMessageOps === true;
+        serverLogsEnabled = message.serverLogs === true;
+        updateServerLogUiAvailability();
         if (joinedRoom && serverChatMessageOps === false) {
           setStatus(
             `${myNickname ? `В сети как ${myNickname}. ` : ""}На сервере нет правок чата — обновите backend (см. docker-compose: том ./server или rebuild).`
           );
+        }
+        break;
+      case "server-log-history":
+        setServerLogHistory(message.logs);
+        break;
+      case "server-log":
+        if (message.log) {
+          appendServerLogEntry(message.log);
         }
         break;
       case "join-accepted":
@@ -2252,6 +2354,10 @@ function closeAdminModal() {
   }
 }
 
+function closeServerLogModal() {
+  closeSimpleModal(serverLogModal);
+}
+
 if (chatMenuBtn && chatDropdown) {
   chatMenuBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -2278,6 +2384,7 @@ document.addEventListener("keydown", (e) => {
   closeAllChatMessageMenus();
   closeAllReactionPickers();
   closeAdminModal();
+  closeServerLogModal();
   closeSimpleModal(profileModal);
   closeSimpleModal(channelsModal);
   closeSimpleModal(donateModal);
@@ -2297,6 +2404,12 @@ if (menuThemeBtn) {
 if (menuAdminBtn) {
   menuAdminBtn.addEventListener("click", () => {
     openAdminModal();
+  });
+}
+
+if (menuServerLogBtn) {
+  menuServerLogBtn.addEventListener("click", () => {
+    openServerLogModal();
   });
 }
 
@@ -2355,6 +2468,9 @@ if (channelsCloseBtn) {
 }
 if (donateCloseBtn) {
   donateCloseBtn.addEventListener("click", () => closeSimpleModal(donateModal));
+}
+if (serverLogCloseBtn) {
+  serverLogCloseBtn.addEventListener("click", () => closeServerLogModal());
 }
 if (textChannelSelect) {
   textChannelSelect.addEventListener("change", () => {
@@ -2437,7 +2553,7 @@ if (adminModal) {
   });
 }
 
-for (const m of [profileModal, channelsModal, donateModal]) {
+for (const m of [profileModal, channelsModal, donateModal, serverLogModal]) {
   if (!m) {
     continue;
   }
@@ -2449,6 +2565,8 @@ for (const m of [profileModal, channelsModal, donateModal]) {
 }
 
 updateThemeButtonLabel();
+updateServerLogUiAvailability();
+renderServerLogs();
 
 (function initMicUiFromStorage() {
   try {

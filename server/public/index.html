@@ -688,6 +688,61 @@
         align-items: center;
       }
 
+      .server-log-modal {
+        max-width: min(920px, calc(100vw - 32px));
+        width: 100%;
+      }
+
+      .server-log-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 60vh;
+        overflow: auto;
+      }
+
+      .server-log-entry {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: var(--input-bg);
+      }
+
+      .server-log-entry[data-level="warn"] {
+        border-color: #f59e0b;
+      }
+
+      .server-log-entry[data-level="error"] {
+        border-color: var(--danger);
+      }
+
+      .server-log-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-bottom: 6px;
+      }
+
+      .server-log-message {
+        font-size: 0.92rem;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .server-log-meta {
+        margin-top: 6px;
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
       .btn-text {
         background: transparent;
         border: none;
@@ -1175,6 +1230,9 @@
               <button type="button" id="menuAdminBtn" class="dropdown-item" role="menuitem">
                 Админ-панель
               </button>
+              <button type="button" id="menuServerLogBtn" class="dropdown-item" role="menuitem" hidden>
+                Логи сервера
+              </button>
               <button type="button" id="menuDonateBtn" class="dropdown-item" role="menuitem">
                 Донат
               </button>
@@ -1271,6 +1329,16 @@
         </div>
         <div class="admin-modal-actions">
           <button type="button" id="adminModalClose" class="btn-primary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <div id="serverLogModal" class="modal-overlay" hidden>
+      <div class="modal-dialog server-log-modal" role="dialog" aria-labelledby="serverLogModalTitle" aria-modal="true">
+        <h2 id="serverLogModalTitle">Логи сервера</h2>
+        <p class="modal-footnote">Временное окно диагностики. Функция включается сервером через конфиг и легко отключается без изменения остального интерфейса.</p>
+        <ul id="serverLogList" class="server-log-list" aria-label="Логи сервера"></ul>
+        <div class="admin-modal-actions">
+          <button type="button" id="serverLogCloseBtn" class="btn-primary">Закрыть</button>
         </div>
       </div>
     </div>

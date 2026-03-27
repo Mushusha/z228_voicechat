@@ -14,6 +14,7 @@ import (
 type HubOptions struct {
 	AdminPanelPassword string
 	MongoURI           string
+	EnableServerLogs   bool
 }
 
 type Hub struct {
@@ -24,6 +25,7 @@ type Hub struct {
 
 	storeMu sync.RWMutex
 	store   chatStore
+	logs    serverLogState
 }
 
 func NewHub(opts HubOptions) *Hub {

@@ -46,6 +46,7 @@ services:
       MONGODB_URI: mongodb://mongo:27017/zalupa228local
       CERT_EXTRA_IPS: ${CERT_EXTRA_IPS:-}
       ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:-admin123}
+      SERVER_LOG_STREAM: ${SERVER_LOG_STREAM:-0}
       # TURN для голоса через интернет (VPS). Свой coturn: задайте TURN_* и поставьте 0.
       RTC_USE_OPEN_RELAY: ${RTC_USE_OPEN_RELAY:-1}
       TURN_URLS: ${TURN_URLS:-}
