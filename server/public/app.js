@@ -84,6 +84,7 @@ function forceDisconnectClient() {
   for (const peerNickname of Array.from(peers.keys())) {
     removePeer(peerNickname);
   }
+  peerConnectionStateByPeer.clear();
   if (micBtn) {
     micBtn.disabled = true;
   }
@@ -178,6 +179,7 @@ const hearByPeer = new Map();
 const pendingIceByPeer = new Map();
 const disconnectTimers = new Map();
 const volumePercentByPeer = new Map();
+const peerConnectionStateByPeer = new Map();
 const peerAudioGraphs = new Map();
 
 let audioContext = null;
@@ -364,6 +366,37 @@ function persistPeerAudioSettings() {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setPeerConnectionState(peerNickname, state) {
+  if (!peerNickname) {
+    return;
+  }
+  if (state) {
+    peerConnectionStateByPeer.set(peerNickname, state);
+  } else {
+    peerConnectionStateByPeer.delete(peerNickname);
+  }
+  renderParticipants();
+}
+
+function peerConnectionBadge(peerNickname) {
+  const state = peerConnectionStateByPeer.get(peerNickname);
+  switch (state) {
+    case "new":
+    case "connecting":
+      return "подключение";
+    case "connected":
+      return "онлайн";
+    case "disconnected":
+      return "обрыв";
+    case "failed":
+      return "нет p2p";
+    case "closed":
+      return "закрыто";
+    default:
+      return "";
+  }
 }
 
 function openSimpleModal(modalEl) {
@@ -1409,8 +1442,9 @@ function renderParticipants() {
     row.className = "peer-row";
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
+    const badge = peerConnectionBadge(peerNickname);
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
-    nameSpan.textContent = peerNickname;
+    nameSpan.textContent = badge ? `${peerNickname} - ${badge}` : peerNickname;
     row.appendChild(nameSpan);
     const audioBtn = document.createElement("button");
     audioBtn.type = "button";
@@ -1425,7 +1459,7 @@ function renderParticipants() {
     });
     row.appendChild(audioBtn);
     li.appendChild(row);
-    li.title = "Нажмите: громкость / mute";
+    li.title = badge ? `Нажмите: громкость / mute. WebRTC: ${badge}` : "Нажмите: громкость / mute";
     li.style.cursor = "pointer";
     li.addEventListener("click", async () => {
       await openAudioPopup(li, peerNickname);
@@ -1667,6 +1701,7 @@ async function createPeerConnection(peerNickname, initiator) {
 
   const pc = new RTCPeerConnection(rtcConfig);
   peers.set(peerNickname, pc);
+  setPeerConnectionState(peerNickname, "new");
   seedPeerAudioFromStorage(peerNickname);
 
   if (localStream) {
@@ -1693,8 +1728,22 @@ async function createPeerConnection(peerNickname, initiator) {
     hookRemoteStream(peerNickname, stream);
   };
 
+  pc.oniceconnectionstatechange = () => {
+    const iceState = pc.iceConnectionState;
+    if (!iceState) {
+      return;
+    }
+    setPeerConnectionState(peerNickname, iceState);
+    if (iceState === "failed") {
+      setStatus(`Нет аудио с ${peerNickname}: WebRTC не пробился. На VPS обычно нужен рабочий TURN, а не только STUN.`);
+    }
+  };
+
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
+    if (state) {
+      setPeerConnectionState(peerNickname, state);
+    }
     if (state === "failed" || state === "closed") {
       const t = disconnectTimers.get(peerNickname);
       if (t) {
@@ -1971,6 +2020,7 @@ function connectSocket() {
         notifyAdminRosterRefresh();
         break;
       case "peer-left":
+        peerConnectionStateByPeer.delete(message.nickname);
         removePeer(message.nickname);
         setStatus(`${message.nickname} вышел`);
         notifyAdminRosterRefresh();
