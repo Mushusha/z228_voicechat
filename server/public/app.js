@@ -284,12 +284,27 @@ function sdpPayload(desc) {
   return { type: desc.type, sdp: desc.sdp };
 }
 
-const rtcConfig = {
+let rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ],
 };
+
+async function loadRtcConfig() {
+  try {
+    const r = await fetch("/api/rtc-config", { cache: "no-store" });
+    if (!r.ok) {
+      return;
+    }
+    const data = await r.json();
+    if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+      rtcConfig = { iceServers: data.iceServers };
+    }
+  } catch (e) {
+    console.warn("rtc-config", e);
+  }
+}
 
 function getAudioConstraints() {
   return {
@@ -2341,6 +2356,8 @@ async function join(options = {}) {
     setStatus("Вы уже в комнате.");
     return;
   }
+
+  await loadRtcConfig();
 
   if (!window.isSecureContext) {
     const httpsPort = document.body.dataset.httpsPort || "3443";

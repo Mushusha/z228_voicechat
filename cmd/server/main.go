@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"zalupa228local/internal/cert"
 	"zalupa228local/internal/config"
 	"zalupa228local/internal/httpstatic"
+	"zalupa228local/internal/rtcconfig"
 	"zalupa228local/internal/ws"
 )
 
@@ -28,10 +30,38 @@ func main() {
 	hub.InitMongoAsync()
 
 	staticHandler := httpstatic.Handler(publicDir)
-	handler := ws.WithWebSocketFallback(hub, staticHandler)
+	base := ws.WithWebSocketFallback(hub, staticHandler)
+
+	rtcIce := rtcconfig.BuildIceServers(
+		cfg.RTCIceServersJSON,
+		cfg.TURNURLs,
+		cfg.TURNUsername,
+		cfg.TURNCredential,
+		cfg.RTCUseOpenRelay,
+	)
+	rtcJSON, err := json.Marshal(map[string]any{"iceServers": rtcIce})
+	if err != nil {
+		log.Fatalf("rtc-config marshal: %v", err)
+	}
+	if cfg.RTCUseOpenRelay {
+		log.Printf("WebRTC: RTC_USE_OPEN_RELAY enabled (public relay + STUN)")
+	}
+	if cfg.TURNURLs != "" {
+		log.Printf("WebRTC: dedicated TURN from TURN_URLS")
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/rtc-config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if _, err := w.Write(rtcJSON); err != nil {
+			log.Printf("rtc-config write: %v", err)
+		}
+	})
+	mux.Handle("/", base)
 
 	httpSrv := &http.Server{
-		Handler:           handler,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -58,7 +88,7 @@ func main() {
 		}
 
 		httpsSrv := &http.Server{
-			Handler:           handler,
+			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second,
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{certPair},
