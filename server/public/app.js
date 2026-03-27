@@ -85,6 +85,10 @@ function forceDisconnectClient() {
     removePeer(peerNickname);
   }
   peerConnectionStateByPeer.clear();
+  for (const timer of reconnectTimers.values()) {
+    clearTimeout(timer);
+  }
+  reconnectTimers.clear();
   if (micBtn) {
     micBtn.disabled = true;
   }
@@ -178,6 +182,7 @@ const remoteAudioByPeer = new Map();
 const hearByPeer = new Map();
 const pendingIceByPeer = new Map();
 const disconnectTimers = new Map();
+const reconnectTimers = new Map();
 const volumePercentByPeer = new Map();
 const peerConnectionStateByPeer = new Map();
 const peerAudioGraphs = new Map();
@@ -397,6 +402,35 @@ function peerConnectionBadge(peerNickname) {
     default:
       return "";
   }
+}
+
+function shouldHavePeerConnection(peerNickname) {
+  if (!peerNickname || !joinedRoom || !myNickname || peerNickname === myNickname) {
+    return false;
+  }
+  const members = Array.isArray(voiceMembersByChannel[currentVoiceChannel]) ? voiceMembersByChannel[currentVoiceChannel] : [];
+  return members.includes(peerNickname);
+}
+
+function schedulePeerReconnect(peerNickname, delayMs) {
+  if (!shouldHavePeerConnection(peerNickname) || reconnectTimers.has(peerNickname)) {
+    return;
+  }
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(peerNickname);
+    if (!shouldHavePeerConnection(peerNickname) || peers.has(peerNickname)) {
+      return;
+    }
+    enqueueRtc(async () => {
+      try {
+        await createPeerConnection(peerNickname, shouldInitiateWithPeer(peerNickname));
+        setStatus(`Переподключаю WebRTC к ${peerNickname}...`);
+      } catch (e) {
+        console.error("Peer reconnect failed", peerNickname, e);
+      }
+    });
+  }, delayMs);
+  reconnectTimers.set(peerNickname, timer);
 }
 
 function openSimpleModal(modalEl) {
@@ -1751,6 +1785,9 @@ async function createPeerConnection(peerNickname, initiator) {
       }
       disconnectTimers.delete(peerNickname);
       removePeer(peerNickname);
+      if (state === "failed") {
+        schedulePeerReconnect(peerNickname, 1500);
+      }
       return;
     }
     if (state === "disconnected") {
@@ -1761,6 +1798,7 @@ async function createPeerConnection(peerNickname, initiator) {
         disconnectTimers.delete(peerNickname);
         if (peers.get(peerNickname) === pc && pc.connectionState === "disconnected") {
           removePeer(peerNickname);
+          schedulePeerReconnect(peerNickname, 1000);
         }
       }, 20000);
       disconnectTimers.set(peerNickname, t);
@@ -1791,6 +1829,11 @@ function removePeer(peerNickname) {
     clearTimeout(t);
   }
   disconnectTimers.delete(peerNickname);
+  const rt = reconnectTimers.get(peerNickname);
+  if (rt) {
+    clearTimeout(rt);
+  }
+  reconnectTimers.delete(peerNickname);
 
   const pc = peers.get(peerNickname);
   if (pc) {
@@ -1991,6 +2034,15 @@ function connectSocket() {
           for (const peerNickname of Array.from(peers.keys())) {
             if (!message.voicePeers.includes(peerNickname)) {
               removePeer(peerNickname);
+            }
+          }
+          for (const peerNickname of Array.from(reconnectTimers.keys())) {
+            if (!message.voicePeers.includes(peerNickname)) {
+              const timer = reconnectTimers.get(peerNickname);
+              if (timer) {
+                clearTimeout(timer);
+              }
+              reconnectTimers.delete(peerNickname);
             }
           }
           enqueueRtc(async () => {
