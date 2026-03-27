@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"log"
-	"net"
 	"net/http"
 	"path/filepath"
 	"time"
