@@ -1625,26 +1625,17 @@ function hookRemoteStream(peerNickname, stream) {
 
 function renderParticipants() {
   participantsEl.innerHTML = "";
+  if (!joinedRoom || voiceDetached) {
+    syncAdminParticipantListIfVisible();
+    return;
+  }
   const peerSet = new Set(Array.from(peers.keys()));
-  if (joinedRoom && !voiceDetached) {
-    const serverList = Array.isArray(voiceMembersByChannel[currentVoiceChannel])
-      ? voiceMembersByChannel[currentVoiceChannel]
-      : [];
-    for (const n of serverList) {
-      if (n) {
-        peerSet.add(n);
-      }
-    }
-  } else {
-    for (const list of Object.values(voiceMembersByChannel)) {
-      if (!Array.isArray(list)) {
-        continue;
-      }
-      for (const n of list) {
-        if (n) {
-          peerSet.add(n);
-        }
-      }
+  const serverList = Array.isArray(voiceMembersByChannel[currentVoiceChannel])
+    ? voiceMembersByChannel[currentVoiceChannel]
+    : [];
+  for (const n of serverList) {
+    if (n) {
+      peerSet.add(n);
     }
   }
   for (const peerNickname of Array.from(peerSet).sort((a, b) => a.localeCompare(b, "ru"))) {
