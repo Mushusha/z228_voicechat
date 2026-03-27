@@ -20,24 +20,45 @@ func New(limit int) *Store {
 	return &Store{seq: 1, limit: limit, rows: make([]chatstore.Message, 0, limit)}
 }
 
-func (s *Store) History(ctx context.Context, limit int) ([]chatstore.Message, error) {
+func messageMatchesTextChannel(msgChannel, filterChannel string) bool {
+	if filterChannel == "" {
+		return false
+	}
+	if msgChannel == filterChannel {
+		return true
+	}
+	if filterChannel == "text-general" && msgChannel == "" {
+		return true
+	}
+	return false
+}
+
+func (s *Store) History(ctx context.Context, channelID string, limit int) ([]chatstore.Message, error) {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if limit <= 0 || limit > len(s.rows) {
-		limit = len(s.rows)
+	matched := make([]chatstore.Message, 0)
+	for _, m := range s.rows {
+		if messageMatchesTextChannel(m.ChannelID, channelID) {
+			matched = append(matched, m)
+		}
+	}
+	n := len(matched)
+	if limit <= 0 || limit > n {
+		limit = n
 	}
 	out := make([]chatstore.Message, limit)
-	copy(out, s.rows[len(s.rows)-limit:])
+	copy(out, matched[n-limit:])
 	return out, nil
 }
 
-func (s *Store) Create(ctx context.Context, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
+func (s *Store) Create(ctx context.Context, channelID, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := chatstore.Message{
 		ID:        strconv.Itoa(s.seq),
+		ChannelID: channelID,
 		Nickname:  nickname,
 		Text:      text,
 		ImageMime: imageMime,

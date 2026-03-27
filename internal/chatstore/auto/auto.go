@@ -74,18 +74,18 @@ func (s *Store) LiveMongo(ctx context.Context) bool {
 	return s.liveMongo(ctx)
 }
 
-func (s *Store) History(ctx context.Context, limit int) ([]chatstore.Message, error) {
+func (s *Store) History(ctx context.Context, channelID string, limit int) ([]chatstore.Message, error) {
 	if s.liveMongo(ctx) {
-		return s.mongo.History(ctx, limit)
+		return s.mongo.History(ctx, channelID, limit)
 	}
-	return s.mem.History(ctx, limit)
+	return s.mem.History(ctx, channelID, limit)
 }
 
-func (s *Store) Create(ctx context.Context, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
+func (s *Store) Create(ctx context.Context, channelID, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
 	if s.liveMongo(ctx) {
-		return s.mongo.Create(ctx, nickname, text, imageMime, imageData)
+		return s.mongo.Create(ctx, channelID, nickname, text, imageMime, imageData)
 	}
-	return s.mem.Create(ctx, nickname, text, imageMime, imageData)
+	return s.mem.Create(ctx, channelID, nickname, text, imageMime, imageData)
 }
 
 func (s *Store) EditText(ctx context.Context, id, nickname, newText string) (chatstore.Message, bool, error) {

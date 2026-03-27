@@ -34,7 +34,7 @@ func (h *Hub) onChat(c *websocket.Conn, sender *client, msg map[string]any) {
 	}
 
 	go func() {
-		m, err := h.getStore().Create(context.Background(), sender.nickname, text, opt(img, func(n *normalizedImage) string { return n.Mime }), opt(img, func(n *normalizedImage) string { return n.Data }))
+		m, err := h.getStore().Create(context.Background(), sender.textChannel, sender.nickname, text, opt(img, func(n *normalizedImage) string { return n.Mime }), opt(img, func(n *normalizedImage) string { return n.Data }))
 		if err != nil {
 			log.Printf("chat save: %v", err)
 			h.sendMap(c, map[string]any{"type": "error", "message": "Failed to save message."})

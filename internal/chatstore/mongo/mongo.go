@@ -22,6 +22,7 @@ type Store struct {
 
 type doc struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty"`
+	ChannelID string             `bson:"channelId,omitempty"`
 	Nickname  string             `bson:"nickname"`
 	Text      string             `bson:"text,omitempty"`
 	ImageMime string             `bson:"imageMime,omitempty"`
@@ -56,11 +57,26 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	return err
 }
 
-func (s *Store) History(ctx context.Context, limit int) ([]chatstore.Message, error) {
+func textChannelHistoryFilter(channelID string) bson.D {
+	if channelID == "" {
+		return bson.D{{Key: "_id", Value: bson.D{{Key: "$exists", Value: false}}}}
+	}
+	if channelID == "text-general" {
+		return bson.D{{Key: "$or", Value: bson.A{
+			bson.D{{Key: "channelId", Value: "text-general"}},
+			bson.D{{Key: "channelId", Value: bson.D{{Key: "$exists", Value: false}}}},
+			bson.D{{Key: "channelId", Value: ""}},
+		}}}
+	}
+	return bson.D{{Key: "channelId", Value: channelID}}
+}
+
+func (s *Store) History(ctx context.Context, channelID string, limit int) ([]chatstore.Message, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	cur, err := s.coll.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(int64(limit)))
+	filter := textChannelHistoryFilter(channelID)
+	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(int64(limit)))
 	if err != nil {
 		return nil, err
 	}
@@ -78,9 +94,10 @@ func (s *Store) History(ctx context.Context, limit int) ([]chatstore.Message, er
 	return out, nil
 }
 
-func (s *Store) Create(ctx context.Context, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
+func (s *Store) Create(ctx context.Context, channelID, nickname, text, imageMime, imageData string) (chatstore.Message, error) {
 	now := time.Now()
 	d := doc{
+		ChannelID: channelID,
 		Nickname:  nickname,
 		Text:      text,
 		ImageMime: imageMime,
@@ -173,6 +190,7 @@ func (s *Store) ToggleReaction(ctx context.Context, id, emoji, nickname string) 
 func toMsg(d doc) chatstore.Message {
 	return chatstore.Message{
 		ID:        d.ID.Hex(),
+		ChannelID: d.ChannelID,
 		Nickname:  d.Nickname,
 		Text:      d.Text,
 		ImageMime: d.ImageMime,

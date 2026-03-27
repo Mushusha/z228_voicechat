@@ -300,15 +300,7 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	}
 	h.broadcastChannelsState()
 
-	go func() {
-		msgs, err := h.getStore().History(context.Background(), 100)
-		if err != nil {
-			log.Printf("chat-history: %v", err)
-			h.sendMap(c, map[string]any{"type": "error", "message": "Failed to load chat history."})
-			return
-		}
-		h.sendMap(c, map[string]any{"type": "chat-history", "messages": toHistoryPayload(msgs)})
-	}()
+	h.sendChatHistoryAsync(c, textChannel)
 }
 
 func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
@@ -446,6 +438,28 @@ func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string
 		"voiceMic":      voiceMic,
 	})
 	h.broadcastChannelsState()
+
+	h.sendChatHistoryAsync(c, sender.textChannel)
+}
+
+func (h *Hub) sendChatHistoryAsync(conn *websocket.Conn, textChannel string) {
+	if textChannel == "" {
+		h.sendMap(conn, map[string]any{"type": "chat-history", "messages": []any{}, "channelId": ""})
+		return
+	}
+	go func() {
+		msgs, err := h.getStore().History(context.Background(), textChannel, 100)
+		if err != nil {
+			log.Printf("chat-history: %v", err)
+			h.sendMap(conn, map[string]any{"type": "error", "message": "Failed to load chat history."})
+			return
+		}
+		h.sendMap(conn, map[string]any{
+			"type":      "chat-history",
+			"messages":  toHistoryPayload(msgs),
+			"channelId": textChannel,
+		})
+	}()
 }
 
 func (h *Hub) onRename(c *websocket.Conn, sender *client, msg map[string]any) {
@@ -675,12 +689,17 @@ func (h *Hub) isAdminConn(c *websocket.Conn) bool {
 func toHistoryPayload(msgs []chatstore.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
+		ch := m.ChannelID
+		if ch == "" {
+			ch = "text-general"
+		}
 		row := map[string]any{
 			"id":        m.ID,
 			"nickname":  m.Nickname,
 			"text":      m.Text,
 			"createdAt": m.CreatedAt.UTC().Format(time.RFC3339Nano),
 			"reactions": m.Reactions,
+			"channelId": ch,
 		}
 		if m.ImageMime != "" && m.ImageData != "" {
 			row["imageMime"] = m.ImageMime

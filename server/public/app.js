@@ -2158,6 +2158,9 @@ function connectSocket() {
         updateAdminJoinHint();
         break;
       case "chat-history":
+        if (Object.prototype.hasOwnProperty.call(message, "channelId") && message.channelId !== currentTextChannel) {
+          break;
+        }
         renderChatHistory(message.messages || []);
         break;
       case "chat-message":

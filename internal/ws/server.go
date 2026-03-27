@@ -33,8 +33,8 @@ func NewHub(opts HubOptions) *Hub {
 }
 
 type chatStore interface {
-	History(ctx context.Context, limit int) ([]chatstore.Message, error)
-	Create(ctx context.Context, nickname, text, imageMime, imageData string) (chatstore.Message, error)
+	History(ctx context.Context, channelID string, limit int) ([]chatstore.Message, error)
+	Create(ctx context.Context, channelID, nickname, text, imageMime, imageData string) (chatstore.Message, error)
 	EditText(ctx context.Context, id, nickname, newText string) (chatstore.Message, bool, error)
 	Delete(ctx context.Context, id, nickname string) (bool, error)
 	ToggleReaction(ctx context.Context, id, emoji, nickname string) (map[string][]string, bool, error)
