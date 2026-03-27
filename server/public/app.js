@@ -583,20 +583,10 @@ function renderChannelPanels() {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      const isCurrent = !textDetached && ch.id === currentTextChannel;
+      const isCurrent = ch.id === currentTextChannel;
       btn.className = "channel-btn" + (isCurrent && joinedRoom ? " active" : "");
       btn.textContent = ch.name;
       btn.addEventListener("click", () => {
-        if (joinedRoom && ch.id === currentTextChannel && !textDetached) {
-          textDetached = true;
-          setChatEnabled(false);
-          if (chatLog) {
-            chatLog.innerHTML = "";
-          }
-          setStatus("Вы вышли из текстового канала (голос остаётся).");
-          renderChannelPanels();
-          return;
-        }
         textDetached = false;
         currentTextChannel = ch.id;
         if (!joinedRoom) {
@@ -630,10 +620,6 @@ function renderChannelPanels() {
           return;
         }
         currentVoiceChannel = ch.id;
-        if (!joinedRoom) {
-          // Вход через голос не должен автоматически открывать текст.
-          textDetached = true;
-        }
         if (!joinedRoom) {
           void join({ fromAutoRejoin: true });
           return;
@@ -1663,14 +1649,6 @@ function renderOnlineParticipants() {
     nameSpan.className = "peer-name";
     nameSpan.textContent = nickname;
     nameWrap.appendChild(nameSpan);
-    if (voiceMicByNickname[nickname] === false) {
-      const micBadge = document.createElement("span");
-      micBadge.className = "peer-mic-badge is-off";
-      micBadge.textContent = "🎙️";
-      micBadge.setAttribute("title", "Микрофон выключен");
-      micBadge.setAttribute("aria-label", "Микрофон выключен");
-      nameWrap.appendChild(micBadge);
-    }
     li.appendChild(nameWrap);
     onlineParticipantsEl.appendChild(li);
   }
