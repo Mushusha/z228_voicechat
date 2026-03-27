@@ -35,9 +35,18 @@ function clearRejoinHint() {
   sessionStorage.removeItem(SS_NICK);
 }
 
-function leaveRoom() {
+async function leaveRoom() {
   clearRejoinHint();
+  const s = socket;
+  if (s && s.readyState === WebSocket.OPEN) {
+    try {
+      s.send(JSON.stringify({ type: "leave" }));
+    } catch (_) {}
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
   forceDisconnectClient();
+  voiceMembersByChannel = {};
+  voiceMicByNickname = {};
   if (chatLog) {
     chatLog.innerHTML = "";
   }
@@ -65,6 +74,13 @@ window.addEventListener("beforeunload", closeSignalingOnPageExit);
 /** Сброс незавершённого входа: «висящий» WebSocket в CONNECTING блокировал повторный join(). */
 function forceDisconnectClient() {
   joinedRoom = false;
+  if (pendingRename) {
+    try {
+      clearTimeout(pendingRename.timer);
+    } catch (_) {}
+    pendingRename.resolve(false);
+    pendingRename = null;
+  }
   if (socket) {
     const s = socket;
     socket = null;
@@ -246,6 +262,8 @@ let textDetached = false;
 let allSoundEnabled = true;
 let allSoundPercent = 100;
 let voiceMembersByChannel = {};
+let voiceMicByNickname = {};
+let pendingRename = null;
 
 function syncAuthUi() {
   const hasSavedNick =
@@ -270,6 +288,21 @@ function syncAuthUi() {
     nicknameInput.hidden = joinedRoom || hasSavedNick;
     nicknameInput.disabled = joinedRoom;
   }
+}
+
+function onlineUsersList() {
+  const users = new Set();
+  for (const members of Object.values(voiceMembersByChannel)) {
+    if (!Array.isArray(members)) {
+      continue;
+    }
+    for (const name of members) {
+      if (name) {
+        users.add(name);
+      }
+    }
+  }
+  return Array.from(users).sort((a, b) => a.localeCompare(b, "ru"));
 }
 
 function enqueueRtc(fn) {
@@ -419,6 +452,9 @@ function applyChannelsState(message) {
   if (message.voiceMembers && typeof message.voiceMembers === "object") {
     voiceMembersByChannel = message.voiceMembers;
   }
+  if (message.voiceMic && typeof message.voiceMic === "object") {
+    voiceMicByNickname = message.voiceMic;
+  }
   try {
     localStorage.setItem(
       LS_CHANNELS_CACHE,
@@ -485,7 +521,7 @@ function renderChannelPanels() {
       btn.addEventListener("click", () => {
         if (joinedRoom && ch.id === currentVoiceChannel) {
           currentVoiceChannel = ch.id;
-          leaveRoom();
+          void leaveRoom();
           return;
         }
         currentVoiceChannel = ch.id;
@@ -504,13 +540,47 @@ function renderChannelPanels() {
       });
       li.appendChild(btn);
       const members = Array.isArray(voiceMembersByChannel[ch.id]) ? voiceMembersByChannel[ch.id] : [];
+      const inGroup = joinedRoom ? members : [];
       const info = document.createElement("div");
       info.className = "voice-members-preview";
-      info.textContent = members.length ? members.join(", ") : "пусто";
+      info.textContent = `В группе: ${inGroup.length ? inGroup.join(", ") : "никого"}`;
       li.appendChild(info);
+
+      const online = document.createElement("div");
+      online.className = "voice-members-preview";
+      const onlineNames = onlineUsersList();
+      online.textContent = `Онлайн: ${onlineNames.length ? onlineNames.join(", ") : "никого"}`;
+      li.appendChild(online);
       voiceChannelsList.appendChild(li);
     }
   }
+}
+
+function requestRename(newName) {
+  if (!joinedRoom || !socket || socket.readyState !== WebSocket.OPEN) {
+    return Promise.resolve(false);
+  }
+  if (pendingRename) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!pendingRename) {
+        return;
+      }
+      pendingRename = null;
+      setStatus("Не удалось изменить имя (таймаут).");
+      resolve(false);
+    }, 5000);
+    pendingRename = { resolve, timer, newName };
+    try {
+      socket.send(JSON.stringify({ type: "rename", nickname: newName }));
+    } catch (_) {
+      clearTimeout(timer);
+      pendingRename = null;
+      resolve(false);
+    }
+  });
 }
 
 function setChatEnabled(enabled) {
@@ -1195,7 +1265,21 @@ function setMicEnabled(enabled) {
       track.enabled = enabled;
     }
   }
+  if (myNickname) {
+    voiceMicByNickname[myNickname] = enabled;
+  }
+  publishMicState();
   setMicButtonState();
+  renderParticipants();
+}
+
+function publishMicState() {
+  if (!joinedRoom || !socket || socket.readyState !== WebSocket.OPEN || !myNickname) {
+    return;
+  }
+  try {
+    socket.send(JSON.stringify({ type: "set-mic", enabled: micEnabled }));
+  } catch (_) {}
 }
 
 function ensureAudibleDefaultsAfterJoin() {
@@ -1418,8 +1502,9 @@ function renderParticipants() {
     row.className = "peer-row";
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
+    const peerMicEnabled = voiceMicByNickname[peerNickname] !== false;
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
-    nameSpan.textContent = peerNickname;
+    nameSpan.textContent = peerMicEnabled ? peerNickname : `${peerNickname} (микро выкл)`;
     row.appendChild(nameSpan);
     const audioBtn = document.createElement("button");
     audioBtn.type = "button";
@@ -1885,6 +1970,7 @@ function connectSocket() {
           setChatEnabled(!textDetached);
           syncAuthUi();
           ensureAudibleDefaultsAfterJoin();
+          publishMicState();
           // Сразу обновляем список участников после входа:
           // он должен быть виден даже до установки p2p-соединений.
           renderParticipants();
@@ -1981,6 +2067,9 @@ function connectSocket() {
         break;
       case "peer-left":
         removePeer(message.nickname);
+        if (message && typeof message.nickname === "string") {
+          delete voiceMicByNickname[message.nickname];
+        }
         setStatus(`${message.nickname} вышел`);
         notifyAdminRosterRefresh();
         break;
@@ -2016,6 +2105,47 @@ function connectSocket() {
       case "signal-error":
         console.warn("Signal error:", message);
         break;
+      case "mic-state":
+        if (message && typeof message.nickname === "string") {
+          voiceMicByNickname[message.nickname] = message.enabled !== false;
+          renderParticipants();
+        }
+        break;
+      case "rename-ok": {
+        const oldNickname = String(message.oldNickname || myNickname || "");
+        const nextNickname = String(message.nickname || "").trim();
+        if (nextNickname) {
+          if (oldNickname && Object.prototype.hasOwnProperty.call(voiceMicByNickname, oldNickname)) {
+            delete voiceMicByNickname[oldNickname];
+          }
+          voiceMicByNickname[nextNickname] = micEnabled;
+          myNickname = nextNickname;
+          if (nicknameInput) {
+            nicknameInput.value = nextNickname;
+          }
+          sessionStorage.setItem(SS_NICK, nextNickname);
+          setCookie(NICK_COOKIE, nextNickname, NICK_COOKIE_MAX_AGE);
+          setStatus(`Имя изменено: ${oldNickname} -> ${nextNickname}`);
+          renderChannelPanels();
+          renderParticipants();
+        }
+        if (pendingRename) {
+          clearTimeout(pendingRename.timer);
+          pendingRename.resolve(true);
+          pendingRename = null;
+        }
+        break;
+      }
+      case "rename-rejected": {
+        const reason = message.reason || "Имя занято.";
+        setStatus(`Имя не изменено: ${reason}`);
+        if (pendingRename) {
+          clearTimeout(pendingRename.timer);
+          pendingRename.resolve(false);
+          pendingRename = null;
+        }
+        break;
+      }
       case "error":
         console.error("Server error:", message.message);
         if (awaitingAdminVerifyResponse) {
@@ -2238,7 +2368,19 @@ if (profileSaveBtn) {
       setStatus("Введите имя.");
       return;
     }
-    const prevJoined = joinedRoom;
+    const oldName = String(myNickname || "").trim();
+    if (newName === oldName) {
+      closeSimpleModal(profileModal);
+      return;
+    }
+    if (joinedRoom) {
+      const ok = await requestRename(newName);
+      if (!ok) {
+        return;
+      }
+      closeSimpleModal(profileModal);
+      return;
+    }
     if (nicknameInput) {
       nicknameInput.value = newName;
     }
@@ -2246,15 +2388,7 @@ if (profileSaveBtn) {
     sessionStorage.setItem(SS_NICK, newName);
     setCookie(NICK_COOKIE, newName, NICK_COOKIE_MAX_AGE);
     closeSimpleModal(profileModal);
-    if (prevJoined) {
-      leaveRoom();
-      await join({ fromAutoRejoin: false });
-      setStatus(`Имя изменено: ${newName}`);
-      return;
-    }
-    if (!joinedRoom) {
-      await join({ fromAutoRejoin: false });
-    }
+    await join({ fromAutoRejoin: false });
   });
 }
 if (channelsCloseBtn) {
@@ -2429,7 +2563,7 @@ if (leaveBtn) {
     if (!joinedRoom) {
       return;
     }
-    leaveRoom();
+    void leaveRoom();
   });
 }
 

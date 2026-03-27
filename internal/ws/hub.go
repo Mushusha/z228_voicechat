@@ -21,6 +21,7 @@ type client struct {
 	nickname    string
 	textChannel string
 	voiceChannel string
+	micEnabled  bool
 }
 
 type connWriter struct {
@@ -142,10 +143,16 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 				continue
 			}
 			switch msgType {
+			case "leave":
+				h.leave(c)
 			case "set-text-channel":
 				h.onSetTextChannel(c, sender, msg)
 			case "set-voice-channel":
 				h.onSetVoiceChannel(c, sender, msg)
+			case "set-mic":
+				h.onSetMic(c, sender, msg)
+			case "rename":
+				h.onRename(c, sender, msg)
 			case "signal":
 				h.onSignal(c, sender, msg)
 			case "chat":
@@ -182,7 +189,8 @@ func clientShouldNotSend(t string) bool {
 	case "hello", "chat-history", "chat-message", "join-accepted", "join-rejected",
 		"peer-joined", "peer-left", "signal-error", "error", "kicked",
 		"admin-verify-ok", "admin-peers-result", "chat-message-updated",
-		"chat-message-deleted", "chat-message-reactions", "channels-state":
+		"chat-message-deleted", "chat-message-reactions", "channels-state",
+		"rename-ok", "rename-rejected", "mic-state":
 		return true
 	default:
 		return false
@@ -195,12 +203,14 @@ func (h *Hub) onGetChannels(c *websocket.Conn) {
 	textChannels := channelsSorted(st.textChannels)
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voiceMembers := voiceMembersByChannelLocked(st)
+	voiceMic := voiceMicByNicknameLocked(st)
 	st.mu.Unlock()
 	h.sendMap(c, map[string]any{
 		"type":          "channels-state",
 		"textChannels":  textChannels,
 		"voiceChannels": voiceChannels,
 		"voiceMembers":  voiceMembers,
+		"voiceMic":      voiceMic,
 	})
 }
 
@@ -233,7 +243,7 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		voiceChannel = "voice-general"
 	}
 
-	st.clientsByConn[c] = &client{ws: c, nickname: nickname, textChannel: textChannel, voiceChannel: voiceChannel}
+	st.clientsByConn[c] = &client{ws: c, nickname: nickname, textChannel: textChannel, voiceChannel: voiceChannel, micEnabled: true}
 	st.connsByNickname[nickname] = c
 
 	peers := make([]string, 0, len(st.connsByNickname))
@@ -246,6 +256,7 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voicePeers := peersForVoiceChannelLocked(st, voiceChannel, nickname)
 	voiceMembers := voiceMembersByChannelLocked(st)
+	voiceMic := voiceMicByNicknameLocked(st)
 	st.mu.Unlock()
 
 	h.sendMap(c, map[string]any{"type": "join-accepted", "nickname": nickname, "peers": peers})
@@ -257,6 +268,7 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 		"currentVoice": voiceChannel,
 		"voicePeers":   voicePeers,
 		"voiceMembers": voiceMembers,
+		"voiceMic":     voiceMic,
 	})
 	h.broadcastToVoiceChannel(map[string]any{"type": "peer-joined", "nickname": nickname}, voiceChannel, c)
 	h.broadcastChannelsState()
@@ -384,6 +396,7 @@ func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voicePeers := peersForVoiceChannelLocked(st, sender.voiceChannel, sender.nickname)
 	voiceMembers := voiceMembersByChannelLocked(st)
+	voiceMic := voiceMicByNicknameLocked(st)
 	st.mu.Unlock()
 	h.sendMap(c, map[string]any{
 		"type":          "channels-state",
@@ -393,8 +406,60 @@ func (h *Hub) onSetTextChannel(c *websocket.Conn, sender *client, msg map[string
 		"currentVoice":  sender.voiceChannel,
 		"voicePeers":    voicePeers,
 		"voiceMembers":  voiceMembers,
+		"voiceMic":      voiceMic,
 	})
 	h.broadcastChannelsState()
+}
+
+func (h *Hub) onRename(c *websocket.Conn, sender *client, msg map[string]any) {
+	newNickname := strings.TrimSpace(asString(msg["nickname"]))
+	if newNickname == "" {
+		h.sendMap(c, map[string]any{"type": "rename-rejected", "reason": "Nickname is required."})
+		return
+	}
+	oldNickname := sender.nickname
+	if oldNickname == newNickname {
+		h.sendMap(c, map[string]any{"type": "rename-ok", "oldNickname": oldNickname, "nickname": oldNickname})
+		return
+	}
+
+	st := h.getState()
+	st.mu.Lock()
+	if existingConn, ok := st.connsByNickname[newNickname]; ok && existingConn != c {
+		st.mu.Unlock()
+		h.sendMap(c, map[string]any{"type": "rename-rejected", "reason": "Nickname already taken."})
+		return
+	}
+	delete(st.connsByNickname, oldNickname)
+	st.connsByNickname[newNickname] = c
+	sender.nickname = newNickname
+	voiceChannel := sender.voiceChannel
+	st.mu.Unlock()
+
+	h.sendMap(c, map[string]any{"type": "rename-ok", "oldNickname": oldNickname, "nickname": newNickname})
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-left", "nickname": oldNickname}, voiceChannel, c)
+	h.broadcastToVoiceChannel(map[string]any{"type": "peer-joined", "nickname": newNickname}, voiceChannel, c)
+	h.broadcastChannelsState()
+}
+
+func (h *Hub) onSetMic(c *websocket.Conn, sender *client, msg map[string]any) {
+	enabled := asBool(msg["enabled"], true)
+	st := h.getState()
+	st.mu.Lock()
+	sender.micEnabled = enabled
+	voiceChannel := sender.voiceChannel
+	nickname := sender.nickname
+	st.mu.Unlock()
+
+	h.broadcastToVoiceChannel(
+		map[string]any{
+			"type":     "mic-state",
+			"nickname": nickname,
+			"enabled":  enabled,
+		},
+		voiceChannel,
+		nil,
+	)
 }
 
 func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[string]any) {
@@ -413,6 +478,7 @@ func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[strin
 	newVoicePeers := peersForVoiceChannelLocked(st, sender.voiceChannel, sender.nickname)
 	oldVoicePeers := peersForVoiceChannelLocked(st, oldVoice, sender.nickname)
 	voiceMembers := voiceMembersByChannelLocked(st)
+	voiceMic := voiceMicByNicknameLocked(st)
 	st.mu.Unlock()
 
 	h.sendMap(c, map[string]any{
@@ -423,6 +489,7 @@ func (h *Hub) onSetVoiceChannel(c *websocket.Conn, sender *client, msg map[strin
 		"currentVoice":  sender.voiceChannel,
 		"voicePeers":    newVoicePeers,
 		"voiceMembers":  voiceMembers,
+		"voiceMic":      voiceMic,
 	})
 	for _, nick := range oldVoicePeers {
 		h.sendMap(c, map[string]any{"type": "peer-left", "nickname": nick})
@@ -675,6 +742,26 @@ func asString(v any) string {
 	return strings.TrimSpace(s)
 }
 
+func asBool(v any, def bool) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		switch s {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	}
+	return def
+}
+
 func channelsSorted(src map[string]ChatChannel) []ChatChannel {
 	out := make([]ChatChannel, 0, len(src))
 	for _, ch := range src {
@@ -722,12 +809,24 @@ func voiceMembersByChannelLocked(st *hubState) map[string][]string {
 	return out
 }
 
+func voiceMicByNicknameLocked(st *hubState) map[string]bool {
+	out := make(map[string]bool, len(st.clientsByConn))
+	for _, cl := range st.clientsByConn {
+		if cl == nil || cl.nickname == "" {
+			continue
+		}
+		out[cl.nickname] = cl.micEnabled
+	}
+	return out
+}
+
 func (h *Hub) broadcastChannelsState() {
 	st := h.getState()
 	st.mu.Lock()
 	textChannels := channelsSorted(st.textChannels)
 	voiceChannels := channelsSorted(st.voiceChannels)
 	voiceMembers := voiceMembersByChannelLocked(st)
+	voiceMic := voiceMicByNicknameLocked(st)
 	st.mu.Unlock()
 	h.broadcastMap(
 		map[string]any{
@@ -735,6 +834,7 @@ func (h *Hub) broadcastChannelsState() {
 			"textChannels":  textChannels,
 			"voiceChannels": voiceChannels,
 			"voiceMembers":  voiceMembers,
+			"voiceMic":      voiceMic,
 		},
 		nil,
 	)
