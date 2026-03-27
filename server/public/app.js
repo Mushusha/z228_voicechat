@@ -105,6 +105,7 @@ function forceDisconnectClient() {
   for (const peerNickname of Array.from(peers.keys())) {
     removePeer(peerNickname);
   }
+  peerConnectionStateByPeer.clear();
   if (micBtn) {
     micBtn.disabled = true;
   }
@@ -200,6 +201,7 @@ const hearByPeer = new Map();
 const pendingIceByPeer = new Map();
 const disconnectTimers = new Map();
 const volumePercentByPeer = new Map();
+const peerConnectionStateByPeer = new Map();
 const peerAudioGraphs = new Map();
 
 let audioContext = null;
@@ -508,6 +510,37 @@ function persistPeerAudioSettings() {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setPeerConnectionState(peerNickname, state) {
+  if (!peerNickname) {
+    return;
+  }
+  if (state) {
+    peerConnectionStateByPeer.set(peerNickname, state);
+  } else {
+    peerConnectionStateByPeer.delete(peerNickname);
+  }
+  renderParticipants();
+}
+
+function peerConnectionBadge(peerNickname) {
+  const state = peerConnectionStateByPeer.get(peerNickname);
+  switch (state) {
+    case "new":
+    case "connecting":
+      return "подключение";
+    case "connected":
+      return "онлайн";
+    case "disconnected":
+      return "обрыв";
+    case "failed":
+      return "нет p2p";
+    case "closed":
+      return "закрыто";
+    default:
+      return "";
+  }
 }
 
 function openSimpleModal(modalEl) {
@@ -1646,9 +1679,10 @@ function renderParticipants() {
     nameWrap.className = "peer-name-wrap";
     const nameSpan = document.createElement("span");
     const isMuted = hearByPeer.get(peerNickname) === false;
+    const connBadge = peerConnectionBadge(peerNickname);
     const peerMicEnabled = voiceMicByNickname[peerNickname] !== false;
     nameSpan.className = "peer-name" + (isMuted ? " muted-label" : "");
-    nameSpan.textContent = peerNickname;
+    nameSpan.textContent = connBadge ? `${peerNickname} — ${connBadge}` : peerNickname;
     nameWrap.appendChild(nameSpan);
     if (!peerMicEnabled) {
       const micBadge = document.createElement("span");
@@ -1676,13 +1710,13 @@ function renderParticipants() {
     }
     li.appendChild(row);
     if (!isSelf) {
-      li.title = "Нажмите: громкость / mute";
+      li.title = connBadge ? `Нажмите: громкость / mute. WebRTC: ${connBadge}` : "Нажмите: громкость / mute";
       li.style.cursor = "pointer";
       li.addEventListener("click", async () => {
         await openAudioPopup(li, peerNickname);
       });
     } else {
-      li.title = "";
+      li.title = connBadge ? `WebRTC: ${connBadge}` : "";
       li.style.cursor = "default";
     }
 
@@ -1940,6 +1974,7 @@ async function createPeerConnection(peerNickname, initiator) {
 
   const pc = new RTCPeerConnection(rtcConfig);
   peers.set(peerNickname, pc);
+  setPeerConnectionState(peerNickname, "new");
   seedPeerAudioFromStorage(peerNickname);
 
   if (localStream) {
@@ -1966,8 +2001,22 @@ async function createPeerConnection(peerNickname, initiator) {
     hookRemoteStream(peerNickname, stream);
   };
 
+  pc.oniceconnectionstatechange = () => {
+    const iceState = pc.iceConnectionState;
+    if (!iceState) {
+      return;
+    }
+    setPeerConnectionState(peerNickname, iceState);
+    if (iceState === "failed") {
+      setStatus(`Нет аудио с ${peerNickname}: WebRTC не пробился. На VPS обычно нужен рабочий TURN, а не только STUN.`);
+    }
+  };
+
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
+    if (state) {
+      setPeerConnectionState(peerNickname, state);
+    }
     if (state === "failed" || state === "closed") {
       const t = disconnectTimers.get(peerNickname);
       if (t) {
@@ -2245,6 +2294,7 @@ function connectSocket() {
         notifyAdminRosterRefresh();
         break;
       case "peer-left":
+        peerConnectionStateByPeer.delete(message.nickname);
         removePeer(message.nickname);
         if (message && typeof message.nickname === "string") {
           delete voiceMicByNickname[message.nickname];
