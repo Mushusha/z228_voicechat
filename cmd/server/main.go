@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"zalupa228local/internal/cert"
@@ -112,23 +111,6 @@ func main() {
 	select {}
 	// graceful shutdown could be added later
 	_ = httpSrv.Shutdown(context.Background())
-}
-
-func listenTCP(host string, port int) (net.Listener, error) {
-	addr := net.JoinHostPort(host, itoa(port))
-	lc := net.ListenConfig{}
-	if host == "::" {
-		lc.Control = func(network, address string, c syscall.RawConn) error {
-			var ctrlErr error
-			if err := c.Control(func(fd uintptr) {
-				ctrlErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0)
-			}); err != nil {
-				return err
-			}
-			return ctrlErr
-		}
-	}
-	return lc.Listen(context.Background(), "tcp", addr)
 }
 
 func itoa(n int) string {
