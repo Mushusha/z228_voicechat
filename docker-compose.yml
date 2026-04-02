@@ -11,7 +11,7 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Self-hosted SFU for voice (optional profile). Browser must reach LIVEKIT_PUBLIC_URL (e.g. ws://localhost:7880).
+  # Self-hosted SFU for voice (optional profile). LIVEKIT_PUBLIC_URL must be reachable from friends' browsers (Radmin VPN host IP).
   livekit:
     image: livekit/livekit-server:latest
     command: --dev --bind 0.0.0.0
@@ -56,10 +56,10 @@ services:
       - "3443:3443"
     environment:
       MONGODB_URI: mongodb://mongo:27017/zalupa228local
-      CERT_EXTRA_IPS: ${CERT_EXTRA_IPS:-}
+      CERT_EXTRA_IPS: ${CERT_EXTRA_IPS:-26.48.124.88}
       ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:-admin123}
-      # LiveKit (--dev uses API key devkey, secret secret). Override for production.
-      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-}
+      # LiveKit: WebSocket URL as seen from VPN peers (override LIVEKIT_PUBLIC_URL in .env if your Radmin IP changes).
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://26.48.124.88:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
     depends_on:
