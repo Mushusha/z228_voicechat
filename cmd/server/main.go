@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"zalupa228local/internal/cert"
 	"zalupa228local/internal/config"
 	"zalupa228local/internal/httpstatic"
-	"zalupa228local/internal/rtcconfig"
 	"zalupa228local/internal/ws"
 )
 
@@ -24,38 +22,19 @@ func main() {
 	hub := ws.NewHub(ws.HubOptions{
 		AdminPanelPassword: cfg.AdminPanelPassword,
 		MongoURI:           cfg.MongoURI,
+		LiveKitPublicURL:   cfg.LiveKitPublicURL,
+		LiveKitAPIKey:      cfg.LiveKitAPIKey,
+		LiveKitAPISecret:   cfg.LiveKitAPISecret,
 	})
 	hub.InitMongoAsync()
+	if cfg.LiveKitAPISecret != "" && cfg.LiveKitAPIKey != "" && cfg.LiveKitPublicURL != "" {
+		log.Printf("LiveKit: voice via SFU (%s)", cfg.LiveKitPublicURL)
+	}
 
 	staticHandler := httpstatic.Handler(publicDir)
 	base := ws.WithWebSocketFallback(hub, staticHandler)
 
-	rtcIce := rtcconfig.BuildIceServers(
-		cfg.RTCIceServersJSON,
-		cfg.TURNURLs,
-		cfg.TURNUsername,
-		cfg.TURNCredential,
-		cfg.RTCUseOpenRelay,
-	)
-	rtcJSON, err := json.Marshal(map[string]any{"iceServers": rtcIce})
-	if err != nil {
-		log.Fatalf("rtc-config marshal: %v", err)
-	}
-	if cfg.RTCUseOpenRelay {
-		log.Printf("WebRTC: RTC_USE_OPEN_RELAY enabled (public relay + STUN)")
-	}
-	if cfg.TURNURLs != "" {
-		log.Printf("WebRTC: dedicated TURN from TURN_URLS")
-	}
-
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/rtc-config", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		if _, err := w.Write(rtcJSON); err != nil {
-			log.Printf("rtc-config write: %v", err)
-		}
-	})
 	mux.Handle("/", base)
 
 	httpSrv := &http.Server{
@@ -65,7 +44,7 @@ func main() {
 
 	go func() {
 		log.Printf("HTTP: http://127.0.0.1:%d — listening %s", cfg.Port, cfg.ListenHost)
-		log.Printf("WebSocket: join, chat, chat-edit, chat-delete, chat-react, signal, admin-verify, admin-peers, admin-kick")
+		log.Printf("WebSocket: join, chat, chat-edit, chat-delete, chat-react, livekit-token, admin-verify, admin-peers, admin-kick")
 		ln, err := listenTCP(cfg.ListenHost, cfg.Port)
 		if err != nil {
 			log.Fatalf("HTTP listen: %v", err)

@@ -11,6 +11,18 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Self-hosted SFU for voice (optional profile). Browser must reach LIVEKIT_PUBLIC_URL (e.g. ws://localhost:7880).
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    profiles: ["livekit"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+      - "50000-50100:50000-50100/udp"
+    restart: unless-stopped
+
   coturn:
     image: coturn/coturn:4.6.3
     profiles: ["turn"]
@@ -46,12 +58,10 @@ services:
       MONGODB_URI: mongodb://mongo:27017/zalupa228local
       CERT_EXTRA_IPS: ${CERT_EXTRA_IPS:-}
       ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:-admin123}
-      # TURN для голоса через интернет (VPS). Свой coturn: задайте TURN_* и поставьте 0.
-      RTC_USE_OPEN_RELAY: ${RTC_USE_OPEN_RELAY:-1}
-      TURN_URLS: ${TURN_URLS:-}
-      TURN_USERNAME: ${TURN_USERNAME:-}
-      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
-      RTC_ICE_SERVERS: ${RTC_ICE_SERVERS:-}
+      # LiveKit (--dev uses API key devkey, secret secret). Override for production.
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
     depends_on:
       mongo:
         condition: service_healthy

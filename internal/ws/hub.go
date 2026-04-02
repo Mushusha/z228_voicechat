@@ -14,6 +14,7 @@ import (
 	"golang.org/x/text/language"
 
 	"zalupa228local/internal/chatstore"
+	"zalupa228local/internal/lk"
 )
 
 type client struct {
@@ -103,7 +104,11 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 	}
 	st.mu.Unlock()
 
-	h.send(c, HelloPayload{Type: "hello", AdminPanel: true, ChatMessageOps: true})
+	hello := HelloPayload{Type: "hello", AdminPanel: true, ChatMessageOps: true}
+	if h.liveKitConfigured() {
+		hello.LiveKitURL = h.opts.LiveKitPublicURL
+	}
+	h.send(c, hello)
 	h.onGetChannels(c)
 
 	for {
@@ -157,8 +162,8 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 				h.onSetMic(c, sender, msg)
 			case "rename":
 				h.onRename(c, sender, msg)
-			case "signal":
-				h.onSignal(c, sender, msg)
+			case "livekit-token":
+				h.onLiveKitToken(c, sender, msg)
 			case "chat":
 				h.onChat(c, sender, msg)
 			case "chat-edit":
@@ -191,7 +196,7 @@ func (h *Hub) handleConn(ctx context.Context, c *websocket.Conn) {
 func clientShouldNotSend(t string) bool {
 	switch t {
 	case "hello", "chat-history", "chat-message", "join-accepted", "join-rejected",
-		"peer-joined", "peer-left", "signal-error", "error", "kicked",
+		"peer-joined", "peer-left", "signal-error", "livekit-token-ok", "livekit-token-error", "error", "kicked",
 		"admin-verify-ok", "admin-peers-result", "chat-message-updated",
 		"chat-message-deleted", "chat-message-reactions", "channels-state",
 		"rename-ok", "rename-rejected", "mic-state", "online-state":
@@ -303,45 +308,45 @@ func (h *Hub) onJoin(c *websocket.Conn, msg map[string]any) {
 	h.sendChatHistoryAsync(c, textChannel)
 }
 
-func (h *Hub) onSignal(c *websocket.Conn, sender *client, msg map[string]any) {
-	target := strings.TrimSpace(asString(msg["target"]))
-	payload := msg["payload"]
+func (h *Hub) liveKitConfigured() bool {
+	return h.opts.LiveKitAPIKey != "" && h.opts.LiveKitAPISecret != "" && strings.TrimSpace(h.opts.LiveKitPublicURL) != ""
+}
+
+func (h *Hub) onLiveKitToken(c *websocket.Conn, sender *client, msg map[string]any) {
+	reqID := strings.TrimSpace(asString(msg["reqId"]))
+	replyErr := func(reason string) {
+		h.sendMap(c, map[string]any{"type": "livekit-token-error", "reqId": reqID, "reason": reason})
+	}
+	if !h.liveKitConfigured() {
+		replyErr("LiveKit is not configured on the server.")
+		return
+	}
 	if sender.voiceChannel == "" {
-		h.sendMap(c, map[string]any{
-			"type":   "signal-error",
-			"target": target,
-			"reason": "Sender not in voice channel.",
-		})
+		replyErr("Join a voice channel first.")
 		return
 	}
-
-	st := h.getState()
-	st.mu.Lock()
-	targetConn := st.connsByNickname[target]
-	targetClient := st.clientsByConn[targetConn]
-	st.mu.Unlock()
-
-	if targetConn == nil || targetClient == nil {
-		h.sendMap(c, map[string]any{
-			"type":   "signal-error",
-			"target": target,
-			"reason": "Target not found.",
-		})
+	if ch := strings.TrimSpace(asString(msg["voiceChannel"])); ch != "" && ch != sender.voiceChannel {
+		replyErr("Voice channel mismatch.")
 		return
 	}
-	if targetClient.voiceChannel == "" || targetClient.voiceChannel != sender.voiceChannel {
-		h.sendMap(c, map[string]any{
-			"type":   "signal-error",
-			"target": target,
-			"reason": "Target in another voice channel.",
-		})
+	room, err := lk.SanitizeRoomName(sender.voiceChannel)
+	if err != nil {
+		replyErr("Invalid voice channel for LiveKit.")
 		return
 	}
-
-	h.sendMap(targetConn, map[string]any{
-		"type":    "signal",
-		"from":    sender.nickname,
-		"payload": payload,
+	token, err := lk.AccessToken(h.opts.LiveKitAPIKey, h.opts.LiveKitAPISecret, room, sender.nickname, sender.nickname)
+	if err != nil {
+		log.Printf("livekit token: %v", err)
+		replyErr("Could not create access token.")
+		return
+	}
+	h.sendMap(c, map[string]any{
+		"type":   "livekit-token-ok",
+		"reqId":  reqID,
+		"url":    h.opts.LiveKitPublicURL,
+		"token":  token,
+		"room":   room,
+		"server": "livekit",
 	})
 }
 

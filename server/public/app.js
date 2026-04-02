@@ -98,12 +98,10 @@ function forceDisconnectClient() {
     } catch (_) {}
   }
   rtcChain = Promise.resolve();
+  void disconnectLiveKitVoice();
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
-  }
-  for (const peerNickname of Array.from(peers.keys())) {
-    removePeer(peerNickname);
   }
   peerConnectionStateByPeer.clear();
   if (micBtn) {
@@ -191,18 +189,27 @@ const micDockBtn = document.getElementById("micDockBtn");
 const soundDockBtn = document.getElementById("soundDockBtn");
 const miniPopup = document.getElementById("miniPopup");
 
-const peers = new Map();
-
 const MIC_ICON_ON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
 
 const MIC_ICON_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
 const remoteAudioByPeer = new Map();
 const hearByPeer = new Map();
-const pendingIceByPeer = new Map();
-const disconnectTimers = new Map();
 const volumePercentByPeer = new Map();
 const peerConnectionStateByPeer = new Map();
 const peerAudioGraphs = new Map();
+
+/** LiveKit SFU voice (optional; enabled when server hello sends liveKitUrl). */
+let liveKitUrlFromServer = "";
+let lkTokenWaiters = new Map();
+let lkReqCounter = 0;
+let liveKitRoom = null;
+/** Voice channel id we last successfully joined on LiveKit (avoid reconnect on every channels-state). */
+let liveKitActiveVoiceChannel = null;
+
+function voiceChannelPeerNicknames() {
+  const list = Array.isArray(voiceMembersByChannel[currentVoiceChannel]) ? voiceMembersByChannel[currentVoiceChannel] : [];
+  return list.filter(Boolean);
+}
 
 let audioContext = null;
 
@@ -221,30 +228,8 @@ async function resumeAudioContextIfNeeded() {
   }
 }
 
-function pushPendingIce(peerNickname, candidateInit) {
-  if (!pendingIceByPeer.has(peerNickname)) {
-    pendingIceByPeer.set(peerNickname, []);
-  }
-  pendingIceByPeer.get(peerNickname).push(candidateInit);
-}
-
-async function flushPendingIce(peerNickname) {
-  const pc = peers.get(peerNickname);
-  if (!pc || !pc.remoteDescription) {
-    return;
-  }
-  const queued = pendingIceByPeer.get(peerNickname);
-  if (!queued || queued.length === 0) {
-    return;
-  }
-  pendingIceByPeer.set(peerNickname, []);
-  for (const init of queued) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(init));
-    } catch (error) {
-      console.error("flush ICE failed", peerNickname, error);
-    }
-  }
+function getLiveKitSDK() {
+  return typeof LivekitClient !== "undefined" ? LivekitClient : null;
 }
 
 let myNickname = null;
@@ -410,54 +395,130 @@ function ensurePresenceSocket() {
 }
 
 function enqueueRtc(fn) {
-  rtcChain = rtcChain.then(fn).catch((e) => console.error("WebRTC queue:", e));
+  rtcChain = rtcChain.then(fn).catch((e) => console.error("voice queue:", e));
   return rtcChain;
 }
 
-function sdpPayload(desc) {
-  if (!desc) {
-    return null;
+async function disconnectLiveKitVoice() {
+  liveKitActiveVoiceChannel = null;
+  if (liveKitRoom) {
+    try {
+      liveKitRoom.removeAllListeners();
+      await liveKitRoom.disconnect();
+    } catch (_) {}
+    liveKitRoom = null;
   }
-  return { type: desc.type, sdp: desc.sdp };
+  for (const nick of Array.from(remoteAudioByPeer.keys())) {
+    teardownPeerAudioGraph(nick);
+  }
+  peerConnectionStateByPeer.clear();
 }
 
-let rtcConfig = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    {
-      urls: [
-        "turn:openrelay.metered.ca:80",
-        "turn:openrelay.metered.ca:443",
-        "turn:openrelay.metered.ca:443?transport=tcp",
-      ],
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-  ],
-};
+async function ensureLiveKitVoiceConnected() {
+  const sdk = getLiveKitSDK();
+  if (!sdk || !liveKitUrlFromServer || !joinedRoom || voiceDetached || !currentVoiceChannel) {
+    await disconnectLiveKitVoice();
+    return;
+  }
+  if (!socket || socket.readyState !== WebSocket.OPEN || !myNickname) {
+    return;
+  }
+  if (liveKitRoom && liveKitRoom.state === "connected" && liveKitActiveVoiceChannel === currentVoiceChannel) {
+    return;
+  }
 
-async function loadRtcConfig() {
+  await disconnectLiveKitVoice();
+
   try {
-    const r = await fetch("/api/rtc-config", { cache: "no-store" });
-    if (!r.ok) {
-      return;
-    }
-    const data = await r.json();
-    if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
-      rtcConfig = { iceServers: data.iceServers };
-    }
-  } catch (e) {
-    console.warn("rtc-config", e);
-  }
-}
+    const reqId = `lk-${Date.now()}-${++lkReqCounter}`;
+    const auth = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (lkTokenWaiters.has(reqId)) {
+          lkTokenWaiters.delete(reqId);
+          reject(new Error("livekit token timeout"));
+        }
+      }, 20000);
+      lkTokenWaiters.set(reqId, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          lkTokenWaiters.delete(reqId);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          lkTokenWaiters.delete(reqId);
+          reject(e);
+        },
+      });
+      try {
+        socket.send(JSON.stringify({ type: "livekit-token", reqId, voiceChannel: currentVoiceChannel }));
+      } catch (err) {
+        lkTokenWaiters.delete(reqId);
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
 
-/** Один инициатор на пару ников — иначе два offer (ICE glare) и голос не поднимается. */
-function shouldInitiateWithPeer(peerNickname) {
-  if (!myNickname || !peerNickname) {
-    return true;
+    const { Room, RoomEvent, Track } = sdk;
+    const room = new Room({ adaptiveStream: true, dynacast: true });
+    liveKitRoom = room;
+
+    room.on(RoomEvent.Disconnected, () => {
+      liveKitActiveVoiceChannel = null;
+      liveKitRoom = null;
+    });
+
+    room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
+      if (track.kind !== Track.Kind.Audio && track.kind !== "audio") {
+        return;
+      }
+      if (participant.identity === myNickname) {
+        return;
+      }
+      const ms = new MediaStream([track.mediaStreamTrack]);
+      seedPeerAudioFromStorage(participant.identity);
+      hookRemoteStream(participant.identity, ms);
+      setPeerConnectionState(participant.identity, "connected");
+      renderParticipants();
+    });
+
+    room.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
+      if (track.kind !== Track.Kind.Audio && track.kind !== "audio") {
+        return;
+      }
+      if (participant.identity !== myNickname) {
+        removePeer(participant.identity);
+      }
+    });
+
+    room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      if (participant.identity !== myNickname) {
+        removePeer(participant.identity);
+      }
+      renderParticipants();
+    });
+
+    await room.connect(String(auth.url || ""), String(auth.token || ""));
+    liveKitActiveVoiceChannel = currentVoiceChannel;
+
+    if (localStream) {
+      const at = localStream.getAudioTracks()[0];
+      if (at) {
+        await room.localParticipant.publishTrack(at, { source: Track.Source.Microphone });
+      }
+    }
+    try {
+      await room.localParticipant.setMicrophoneEnabled(Boolean(localStream) && micEnabled);
+    } catch (_) {}
+
+    setStatus(`Голос: LiveKit (${currentVoiceChannel})`);
+    renderParticipants();
+  } catch (e) {
+    console.error("LiveKit", e);
+    liveKitActiveVoiceChannel = null;
+    await disconnectLiveKitVoice();
+    setStatus(`Голос (LiveKit): ${e && e.message ? e.message : String(e)}`);
   }
-  return myNickname.localeCompare(peerNickname, "ru") < 0;
 }
 
 function getAudioConstraints() {
@@ -495,7 +556,7 @@ function persistPeerAudioSettings() {
   } catch (_) {
     store = {};
   }
-  for (const peerNickname of peers.keys()) {
+  for (const peerNickname of volumePercentByPeer.keys()) {
     store[peerNickname] = {
       v: volumePercentByPeer.get(peerNickname) ?? 100,
       m: hearByPeer.get(peerNickname) === false,
@@ -525,19 +586,18 @@ function setPeerConnectionState(peerNickname, state) {
 }
 
 function peerConnectionBadge(peerNickname) {
+  if (liveKitRoom && liveKitRoom.state === "connected") {
+    if (peerNickname === myNickname) {
+      return "LiveKit";
+    }
+    if (liveKitRoom.remoteParticipants.get(peerNickname)) {
+      return "онлайн";
+    }
+  }
   const state = peerConnectionStateByPeer.get(peerNickname);
   switch (state) {
-    case "new":
-    case "connecting":
-      return "подключение";
     case "connected":
       return "онлайн";
-    case "disconnected":
-      return "обрыв";
-    case "failed":
-      return "нет p2p";
-    case "closed":
-      return "закрыто";
     default:
       return "";
   }
@@ -680,9 +740,7 @@ function renderChannelPanels() {
             if (socket && socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "set-voice-channel", channelId: "" }));
             }
-            for (const peerNickname of Array.from(peers.keys())) {
-              removePeer(peerNickname);
-            }
+            void disconnectLiveKitVoice();
             renderChannelPanels();
           }
           return;
@@ -1449,6 +1507,9 @@ function setMicEnabled(enabled) {
       track.enabled = enabled;
     }
   }
+  if (liveKitRoom && liveKitRoom.state === "connected" && liveKitRoom.localParticipant) {
+    liveKitRoom.localParticipant.setMicrophoneEnabled(Boolean(localStream) && enabled).catch(() => {});
+  }
   if (myNickname) {
     voiceMicByNickname[myNickname] = enabled;
   }
@@ -1471,7 +1532,10 @@ function ensureAudibleDefaultsAfterJoin() {
   if (allSoundToggleBtn) {
     allSoundToggleBtn.textContent = "Звук всех: вкл";
   }
-  for (const peerNickname of peers.keys()) {
+  for (const peerNickname of voiceChannelPeerNicknames()) {
+    if (peerNickname === myNickname) {
+      continue;
+    }
     hearByPeer.set(peerNickname, true);
     applyPeerGain(peerNickname);
     const a = remoteAudioByPeer.get(peerNickname);
@@ -1505,7 +1569,10 @@ function applyPeerMutedState(peerNickname, isMuted) {
 
 function applyAllMutedState(isMuted) {
   allSoundEnabled = !isMuted;
-  for (const p of peers.keys()) {
+  for (const p of voiceChannelPeerNicknames()) {
+    if (p === myNickname) {
+      continue;
+    }
     applyPeerMutedState(p, isMuted);
   }
 }
@@ -1549,7 +1616,10 @@ async function openAudioPopup(anchorEl, peerNickname = "") {
         persistPeerAudioSettings();
       } else {
         allSoundPercent = v;
-        for (const p of peers.keys()) {
+        for (const p of voiceChannelPeerNicknames()) {
+          if (p === myNickname) {
+            continue;
+          }
           volumePercentByPeer.set(p, v);
           applyPeerGain(p);
           const a = remoteAudioByPeer.get(p);
@@ -1662,14 +1732,12 @@ function renderParticipants() {
     syncAdminParticipantListIfVisible();
     return;
   }
-  const peerSet = new Set(Array.from(peers.keys()));
   const serverList = Array.isArray(voiceMembersByChannel[currentVoiceChannel])
     ? voiceMembersByChannel[currentVoiceChannel]
     : [];
-  for (const n of serverList) {
-    if (n) {
-      peerSet.add(n);
-    }
+  const peerSet = new Set(serverList.filter(Boolean));
+  if (myNickname) {
+    peerSet.add(myNickname);
   }
   for (const peerNickname of Array.from(peerSet).sort((a, b) => a.localeCompare(b, "ru"))) {
     const li = document.createElement("li");
@@ -1710,13 +1778,13 @@ function renderParticipants() {
     }
     li.appendChild(row);
     if (!isSelf) {
-      li.title = connBadge ? `Нажмите: громкость / mute. WebRTC: ${connBadge}` : "Нажмите: громкость / mute";
+      li.title = connBadge ? `Нажмите: громкость / mute. Аудио: ${connBadge}` : "Нажмите: громкость / mute";
       li.style.cursor = "pointer";
       li.addEventListener("click", async () => {
         await openAudioPopup(li, peerNickname);
       });
     } else {
-      li.title = connBadge ? `WebRTC: ${connBadge}` : "";
+      li.title = connBadge ? `Аудио: ${connBadge}` : "";
       li.style.cursor = "default";
     }
 
@@ -1953,159 +2021,15 @@ function sendAdminChannelOp(type, kind, id, name) {
   socket.send(JSON.stringify(payload));
 }
 
-function sendSignal(target, payload) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  socket.send(
-    JSON.stringify({
-      type: "signal",
-      target,
-      payload,
-    })
-  );
-}
-
-async function createPeerConnection(peerNickname, initiator) {
-  if (peers.has(peerNickname)) {
-    return peers.get(peerNickname);
-  }
-
-  const pc = new RTCPeerConnection(rtcConfig);
-  peers.set(peerNickname, pc);
-  setPeerConnectionState(peerNickname, "new");
-  seedPeerAudioFromStorage(peerNickname);
-
-  if (localStream) {
-    for (const track of localStream.getTracks()) {
-      pc.addTrack(track, localStream);
-    }
-  } else {
-    try {
-      pc.addTransceiver("audio", { direction: "recvonly" });
-    } catch (_) {}
-  }
-
-  pc.onicecandidate = (event) => {
-    if (!event.candidate) {
-      return;
-    }
-    const c = event.candidate;
-    const plain = c.toJSON ? c.toJSON() : { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex };
-    sendSignal(peerNickname, { candidate: plain });
-  };
-
-  pc.ontrack = (event) => {
-    const stream = event.streams[0];
-    hookRemoteStream(peerNickname, stream);
-  };
-
-  pc.oniceconnectionstatechange = () => {
-    const iceState = pc.iceConnectionState;
-    if (!iceState) {
-      return;
-    }
-    setPeerConnectionState(peerNickname, iceState);
-    if (iceState === "failed") {
-      setStatus(`Нет аудио с ${peerNickname}: WebRTC не пробился. На VPS обычно нужен рабочий TURN, а не только STUN.`);
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    const state = pc.connectionState;
-    if (state) {
-      setPeerConnectionState(peerNickname, state);
-    }
-    if (state === "failed" || state === "closed") {
-      const t = disconnectTimers.get(peerNickname);
-      if (t) {
-        clearTimeout(t);
-      }
-      disconnectTimers.delete(peerNickname);
-      removePeer(peerNickname);
-      return;
-    }
-    if (state === "disconnected") {
-      if (disconnectTimers.has(peerNickname)) {
-        return;
-      }
-      const t = setTimeout(() => {
-        disconnectTimers.delete(peerNickname);
-        if (peers.get(peerNickname) === pc && pc.connectionState === "disconnected") {
-          removePeer(peerNickname);
-        }
-      }, 20000);
-      disconnectTimers.set(peerNickname, t);
-      return;
-    }
-    if (state === "connected" || state === "connecting") {
-      const t = disconnectTimers.get(peerNickname);
-      if (t) {
-        clearTimeout(t);
-        disconnectTimers.delete(peerNickname);
-      }
-    }
-  };
-
-  if (initiator) {
-    const offer = await pc.createOffer({ offerToReceiveAudio: true, iceRestart: false });
-    await pc.setLocalDescription(offer);
-    sendSignal(peerNickname, { description: sdpPayload(pc.localDescription) });
-  }
-
-  renderParticipants();
-  return pc;
-}
-
 function removePeer(peerNickname) {
-  const t = disconnectTimers.get(peerNickname);
-  if (t) {
-    clearTimeout(t);
-  }
-  disconnectTimers.delete(peerNickname);
-
-  const pc = peers.get(peerNickname);
-  if (pc) {
-    pc.onicecandidate = null;
-    pc.ontrack = null;
-    pc.close();
-  }
-
-  peers.delete(peerNickname);
-  hearByPeer.delete(peerNickname);
-  pendingIceByPeer.delete(peerNickname);
-  volumePercentByPeer.delete(peerNickname);
-  teardownPeerAudioGraph(peerNickname);
-
-  renderParticipants();
-}
-
-async function handleSignal(from, payload) {
-  const pc = await createPeerConnection(from, false);
-
-  if (payload.description) {
-    await pc.setRemoteDescription(new RTCSessionDescription(payload.description));
-    if (payload.description.type === "offer") {
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendSignal(from, { description: sdpPayload(pc.localDescription) });
-    }
-    await flushPendingIce(from);
+  if (!peerNickname) {
     return;
   }
-
-  if (payload.candidate) {
-    if (!pc.remoteDescription) {
-      pushPendingIce(from, payload.candidate);
-      return;
-    }
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-    } catch (error) {
-      console.error("Failed to add ICE candidate", error);
-    }
-  }
+  teardownPeerAudioGraph(peerNickname);
+  hearByPeer.delete(peerNickname);
+  volumePercentByPeer.delete(peerNickname);
+  peerConnectionStateByPeer.delete(peerNickname);
+  renderParticipants();
 }
 
 function connectSocket() {
@@ -2167,6 +2091,7 @@ function connectSocket() {
 
     switch (message.type) {
       case "hello":
+        liveKitUrlFromServer = typeof message.liveKitUrl === "string" ? message.liveKitUrl.trim() : "";
         serverChatMessageOps = message.chatMessageOps === true;
         if (joinedRoom && serverChatMessageOps === false) {
           setStatus(
@@ -2199,8 +2124,9 @@ function connectSocket() {
           // Сразу обновляем список участников после входа:
           // он должен быть виден даже до установки p2p-соединений.
           renderParticipants();
-          for (const peerNickname of message.peers) {
-            await createPeerConnection(peerNickname, shouldInitiateWithPeer(peerNickname));
+          await ensureLiveKitVoiceConnected();
+          if (!voiceDetached && currentVoiceChannel && !liveKitUrlFromServer) {
+            setStatus("Голос недоступен: на сервере не заданы LIVEKIT_PUBLIC_URL и ключи.");
           }
         });
         await rtcChain;
@@ -2262,20 +2188,20 @@ function connectSocket() {
       case "channels-state":
         applyChannelsState(message);
         if (Array.isArray(message.voicePeers)) {
-          for (const peerNickname of Array.from(peers.keys())) {
-            if (!message.voicePeers.includes(peerNickname)) {
-              removePeer(peerNickname);
+          const allowed = new Set(message.voicePeers);
+          if (myNickname) {
+            allowed.add(myNickname);
+          }
+          for (const nick of Array.from(remoteAudioByPeer.keys())) {
+            if (!allowed.has(nick)) {
+              removePeer(nick);
             }
           }
-          enqueueRtc(async () => {
-            for (const peerNickname of message.voicePeers) {
-              if (!peers.has(peerNickname)) {
-                await createPeerConnection(peerNickname, shouldInitiateWithPeer(peerNickname));
-              }
-            }
-          });
-          await rtcChain;
         }
+        enqueueRtc(async () => {
+          await ensureLiveKitVoiceConnected();
+        });
+        await rtcChain;
         break;
       case "join-rejected":
         joinedRoom = false;
@@ -2286,11 +2212,7 @@ function connectSocket() {
         updateAdminJoinHint();
         break;
       case "peer-joined":
-        enqueueRtc(async () => {
-          await createPeerConnection(message.nickname, shouldInitiateWithPeer(message.nickname));
-          setStatus(`${message.nickname} вошёл`);
-        });
-        await rtcChain;
+        setStatus(`${message.nickname} вошёл`);
         notifyAdminRosterRefresh();
         break;
       case "peer-left":
@@ -2328,13 +2250,20 @@ function connectSocket() {
         clearRejoinHint();
         forceDisconnectClient();
         break;
-      case "signal":
-        enqueueRtc(() => handleSignal(message.from, message.payload));
-        await rtcChain;
+      case "livekit-token-ok": {
+        const w = lkTokenWaiters.get(message.reqId);
+        if (w && typeof w.resolve === "function") {
+          w.resolve({ url: message.url, token: message.token });
+        }
         break;
-      case "signal-error":
-        console.warn("Signal error:", message);
+      }
+      case "livekit-token-error": {
+        const w = lkTokenWaiters.get(message.reqId);
+        if (w && typeof w.reject === "function") {
+          w.reject(new Error(message.reason || "livekit-token-error"));
+        }
         break;
+      }
       case "online-state":
         if (Array.isArray(message.onlineUsers)) {
           onlineUsers = message.onlineUsers;
@@ -2372,6 +2301,10 @@ function connectSocket() {
           pendingRename.resolve(true);
           pendingRename = null;
         }
+        enqueueRtc(async () => {
+          await ensureLiveKitVoiceConnected();
+        });
+        await rtcChain;
         break;
       }
       case "rename-rejected": {
@@ -2440,9 +2373,7 @@ function connectSocket() {
       if (chatLog) {
         chatLog.innerHTML = "";
       }
-      for (const peerNickname of Array.from(peers.keys())) {
-        removePeer(peerNickname);
-      }
+      void disconnectLiveKitVoice();
       ensurePresenceSocket();
       publishPresence();
     } catch (_) {
@@ -2752,8 +2683,6 @@ async function join(options = {}) {
     return;
   }
 
-  await loadRtcConfig();
-
   if (!window.isSecureContext) {
     const httpsPort = document.body.dataset.httpsPort || "3443";
     const host = location.hostname;
@@ -2843,7 +2772,10 @@ if (soundDockBtn) {
     if (!allSoundEnabled) {
       setMicEnabled(false);
     }
-    for (const peerNickname of peers.keys()) {
+    for (const peerNickname of voiceChannelPeerNicknames()) {
+      if (peerNickname === myNickname) {
+        continue;
+      }
       hearByPeer.set(peerNickname, allSoundEnabled);
       applyPeerGain(peerNickname);
     }
@@ -2865,7 +2797,10 @@ if (allSoundToggleBtn) {
   allSoundToggleBtn.addEventListener("click", () => {
     allSoundEnabled = !allSoundEnabled;
     allSoundToggleBtn.textContent = allSoundEnabled ? "Звук всех: вкл" : "Звук всех: выкл";
-    for (const peerNickname of peers.keys()) {
+    for (const peerNickname of voiceChannelPeerNicknames()) {
+      if (peerNickname === myNickname) {
+        continue;
+      }
       hearByPeer.set(peerNickname, allSoundEnabled);
       applyPeerGain(peerNickname);
     }
@@ -2879,7 +2814,10 @@ if (allSoundVolume) {
     if (allSoundVolumeVal) {
       allSoundVolumeVal.textContent = `${allSoundPercent}%`;
     }
-    for (const peerNickname of peers.keys()) {
+    for (const peerNickname of voiceChannelPeerNicknames()) {
+      if (peerNickname === myNickname) {
+        continue;
+      }
       volumePercentByPeer.set(peerNickname, allSoundPercent);
       applyPeerGain(peerNickname);
     }

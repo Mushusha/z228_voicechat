@@ -13,12 +13,11 @@ type Config struct {
 	MongoURI           string
 	AdminPanelPassword string
 	CertExtraIPs       string
-	RTCIceServersJSON  string
-	TURNURLs           string
-	TURNUsername       string
-	TURNCredential     string
-	// RTCUseOpenRelay appends Metered Open Relay TURN (helps WebRTC over the public Internet).
-	RTCUseOpenRelay bool
+
+	// LiveKit (voice SFU). Public URL is what browsers use (e.g. wss://lk.example.com or ws://localhost:7880).
+	LiveKitPublicURL string
+	LiveKitAPIKey    string
+	LiveKitAPISecret string
 }
 
 func Load() Config {
@@ -29,26 +28,9 @@ func Load() Config {
 		MongoURI:           envString("MONGODB_URI", "mongodb://127.0.0.1:27017/zalupa228local"),
 		AdminPanelPassword: envString("ADMIN_PANEL_PASSWORD", "admin123"),
 		CertExtraIPs:       envString("CERT_EXTRA_IPS", ""),
-		RTCIceServersJSON:  envString("RTC_ICE_SERVERS", ""),
-		TURNURLs:           envString("TURN_URLS", ""),
-		TURNUsername:       envString("TURN_USERNAME", ""),
-		TURNCredential:     envString("TURN_CREDENTIAL", ""),
-		RTCUseOpenRelay:    envBool("RTC_USE_OPEN_RELAY", true),
-	}
-}
-
-func envBool(k string, def bool) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
-	if v == "" {
-		return def
-	}
-	switch v {
-	case "1", "true", "yes", "y", "on":
-		return true
-	case "0", "false", "no", "n", "off":
-		return false
-	default:
-		return def
+		LiveKitPublicURL:   strings.TrimSpace(envString("LIVEKIT_PUBLIC_URL", "")),
+		LiveKitAPIKey:      strings.TrimSpace(envString("LIVEKIT_API_KEY", "")),
+		LiveKitAPISecret:   strings.TrimSpace(envString("LIVEKIT_API_SECRET", "")),
 	}
 }
 

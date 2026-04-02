@@ -14,6 +14,10 @@ import (
 type HubOptions struct {
 	AdminPanelPassword string
 	MongoURI           string
+
+	LiveKitPublicURL string
+	LiveKitAPIKey    string
+	LiveKitAPISecret string
 }
 
 type Hub struct {
