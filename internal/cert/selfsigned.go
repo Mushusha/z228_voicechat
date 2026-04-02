@@ -19,14 +19,19 @@ type Credentials struct {
 	KeyPEM  []byte
 }
 
-func SelfSigned(commonName string, extraIPsCSV string) (Credentials, error) {
+func SelfSigned(commonName string, extraSANCSV string) (Credentials, error) {
 	ips, err := localIPv4s()
 	if err != nil {
 		return Credentials{}, err
 	}
-	for _, s := range splitCSV(extraIPsCSV) {
+	dnsNames := []string{"localhost"}
+	for _, s := range splitCSV(extraSANCSV) {
 		if ip := net.ParseIP(s); ip != nil {
 			ips = appendIfMissingIP(ips, ip)
+			continue
+		}
+		if s != "" && s != "localhost" {
+			dnsNames = appendIfMissingString(dnsNames, s)
 		}
 	}
 
@@ -51,7 +56,7 @@ func SelfSigned(commonName string, extraIPsCSV string) (Credentials, error) {
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
+		DNSNames:              dnsNames,
 		IPAddresses:           ips,
 	}
 
@@ -120,6 +125,16 @@ func appendIfMissingIP(xs []net.IP, ip net.IP) []net.IP {
 	}
 	return append(xs, ip)
 }
+
+func appendIfMissingString(xs []string, s string) []string {
+	for _, x := range xs {
+		if x == s {
+			return xs
+		}
+	}
+	return append(xs, s)
+}
+
 
 func splitCSV(s string) []string {
 	var out []string
